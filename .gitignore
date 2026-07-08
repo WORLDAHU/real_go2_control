@@ -1,0 +1,53 @@
+# Python cache and test artifacts
+__pycache__/
+*.py[cod]
+*.pyo
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+
+# Virtual environments and local package installs
+.venv/
+venv/
+env/
+*.egg-info/
+build/
+dist/
+
+# Local editor and OS files
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+
+# Runtime logs and temporary files
+*.log
+*.tmp
+*.bak
+*.swp
+*.swo
+
+# Local hardware calibration and secrets
+motor_home.json
+*home*.json
+*.key
+*.pem
+.env
+.env.*
+
+# Large/generated experiment outputs
+*.mp4
+*.avi
+*.mov
+*.gif
+*.npy
+*.npz
+
+# Keep source models and scripts tracked, but ignore copied SDK/build folders
+unitree_actuator_sdk/
+UnitreeMotorTools/
+*.png
+*.jpg
+*.jpeg

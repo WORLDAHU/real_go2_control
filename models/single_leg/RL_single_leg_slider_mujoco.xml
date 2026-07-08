@@ -1,0 +1,23 @@
+<?xml version='1.0' encoding='utf-8'?>
+<mujoco model="RL_single_leg_slider">
+  <compiler angle="radian" meshdir="../custom_robot/meshes" />
+  <asset><mesh name="RL_hip_visual_mesh" file="RL_hip.STL" /><mesh name="RL_thigh_visual_mesh" file="RL_thigh.STL" /><mesh name="RL_calf_visual_mesh" file="RL_calf.STL" /><mesh name="RL_foot_visual_mesh" file="RL_foot.STL" /></asset><worldbody>
+    <body name="slider_link" pos="0 0 0.35">
+      <inertial pos="0 0 0" mass="0.2" diaginertia="0.001 0.001 0.001" />
+      <joint name="slider_z_joint" pos="0 0 0" axis="0 0 1" type="slide" range="-0.3 0.6" actuatorfrcrange="-100 100" />
+      <body name="RL_hip" pos="0 0 0.002513">
+        <inertial pos="-0.0473043 -0.0004014 -7.85e-05" quat="0.716285 -0.00340057 -0.0033594 0.697792" mass="0.290394" diaginertia="0.000331578 0.000216825 0.000174996" />
+        <joint name="RL_hip_joint" pos="0 0 0" axis="1 0 0" range="-0.35 0.35" actuatorfrcrange="-8 8" />
+        <body name="RL_thigh" pos="-0.0599992 0.0203992 0">
+          <inertial pos="-0.0028225 0.0426963 -0.0252023" quat="0.708784 -0.0250879 -0.0296565 0.704355" mass="0.55367" diaginertia="0.00157436 0.00130961 0.000288333" />
+          <joint name="RL_thigh_joint" pos="0 0 0" axis="0 1 0" range="-0.2 1.4" actuatorfrcrange="-8 8" />
+          <body name="RL_calf" pos="0 0.05865 -0.194014">
+            <inertial pos="0.00859349 3.09319e-06 -0.0880809" quat="0.706896 0.0169337 0.0169382 0.706912" mass="0.0922499" diaginertia="0.000474241 0.000468626 9.91523e-06" />
+            <joint name="RL_calf_joint" pos="0 0 0" axis="0 1 0" range="-2.8 -1.2" actuatorfrcrange="-8 8" />
+            <geom size="0.014796" pos="-1.26e-05 0 -0.19819" rgba="0.796078 0.823529 0.937255 1" name="RL_foot_contact_geom" />
+          <geom name="RL_calf_visual" type="mesh" mesh="RL_calf_visual_mesh" contype="0" conaffinity="0" rgba="0.75 0.75 0.78 1" group="2" /></body>
+        <geom name="RL_thigh_visual" type="mesh" mesh="RL_thigh_visual_mesh" contype="0" conaffinity="0" rgba="0.75 0.75 0.78 1" group="2" /></body>
+      <geom name="RL_hip_visual" type="mesh" mesh="RL_hip_visual_mesh" contype="0" conaffinity="0" rgba="0.75 0.75 0.78 1" group="2" /></body>
+    <geom name="slider_visual" type="box" size="0.04 0.04 0.03" rgba="0.1 0.3 0.6 1" contype="0" conaffinity="0" group="2" /></body>
+  <geom name="floor" type="plane" pos="0 0 0" size="2 2 0.05" rgba="0.8 0.8 0.8 1" /><geom name="rail_visual" type="capsule" fromto="0.000000 0.000000 0.0 0.000000 0.000000 0.9" size="0.012" rgba="0.2 0.2 0.2 1" contype="0" conaffinity="0" group="2" /></worldbody>
+<option timestep="0.002" gravity="0 0 -9.81" /><actuator><motor name="RL_hip_motor" joint="RL_hip_joint" gear="1" ctrllimited="true" ctrlrange="-8.0 8.0" /><motor name="RL_thigh_motor" joint="RL_thigh_joint" gear="1" ctrllimited="true" ctrlrange="-8.0 8.0" /><motor name="RL_calf_motor" joint="RL_calf_joint" gear="1" ctrllimited="true" ctrlrange="-8.0 8.0" /></actuator></mujoco>

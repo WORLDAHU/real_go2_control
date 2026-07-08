@@ -1,0 +1,36 @@
+<mujoco model="real_go2">
+  <compiler angle="radian" meshdir="../custom_robot/meshes" autolimits="true"/>
+
+  <option timestep="0.002" gravity="0 0 -9.81"/>
+
+  <asset>
+  </asset>
+
+  <worldbody>
+    <body name="base_link" pos="0 0 0.27">
+      <freejoint name="floating_base"/>
+
+      <body name="robot_from_urdf">
+        <include file="../custom_robot/GO2.urdf"/>
+      </body>
+    </body>
+  </worldbody>
+
+  <actuator>
+    <motor name="FL_hip_motor" joint="FL_hip_joint" gear="1"/>
+    <motor name="FL_thigh_motor" joint="FL_thigh_joint" gear="1"/>
+    <motor name="FL_calf_motor" joint="FL_calf_joint" gear="1"/>
+
+    <motor name="FR_hip_motor" joint="FR_hip_joint" gear="1"/>
+    <motor name="FR_thigh_motor" joint="FR_thigh_joint" gear="1"/>
+    <motor name="FR_calf_motor" joint="FR_calf_joint" gear="1"/>
+
+    <motor name="RL_hip_motor" joint="RL_hip_joint" gear="1"/>
+    <motor name="RL_thigh_motor" joint="RL_thigh_joint" gear="1"/>
+    <motor name="RL_calf_motor" joint="RL_calf_joint" gear="1"/>
+
+    <motor name="RR_hip_motor" joint="RR_hip_joint" gear="1"/>
+    <motor name="RR_thigh_motor" joint="RR_thigh_joint" gear="1"/>
+    <motor name="RR_calf_motor" joint="RR_calf_joint" gear="1"/>
+  </actuator>
+</mujoco>
