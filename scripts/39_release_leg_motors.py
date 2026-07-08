@@ -55,6 +55,29 @@ def send_cmd(sdk, serial, cmd, data, motor_id, mode, q=0.0, dq=0.0, kp=0.0, kd=0
     return int(data.merror)
 
 
+def read_current_q(sdk, serial, cmd, data, motor_id, samples, dt):
+    foc_mode = foc_mode_value(sdk)
+    vals = []
+    err = 0
+    for _ in range(samples):
+        err = send_cmd(
+            sdk,
+            serial,
+            cmd,
+            data,
+            motor_id,
+            mode=foc_mode,
+            q=0.0,
+            dq=0.0,
+            kp=0.0,
+            kd=0.0,
+            tau=0.0,
+        )
+        vals.append(float(data.q))
+        time.sleep(dt)
+    return sum(vals) / len(vals), err
+
+
 def release_motor(sdk, cfg, fade_steps, stop_steps, dt):
     serial = sdk.SerialPort(cfg["port"])
     cmd = sdk.MotorCmd()
@@ -67,7 +90,19 @@ def release_motor(sdk, cfg, fade_steps, stop_steps, dt):
         f"stop_mode={stop_mode}"
     )
 
+    q_hold, err = read_current_q(
+        sdk=sdk,
+        serial=serial,
+        cmd=cmd,
+        data=data,
+        motor_id=cfg["id"],
+        samples=10,
+        dt=dt,
+    )
+    print(f"  current rotor q={q_hold:+.6f} rad, merror={err}")
+
     # First remove active stiffness while still communicating in FOC.
+    # Hold the current rotor position; do not command q=0 during release.
     for i in range(fade_steps):
         fade = 1.0 - i / max(fade_steps, 1)
         err = send_cmd(
@@ -77,7 +112,7 @@ def release_motor(sdk, cfg, fade_steps, stop_steps, dt):
             data,
             cfg["id"],
             mode=foc_mode,
-            q=data.q,
+            q=q_hold,
             dq=0.0,
             kp=0.05 * fade,
             kd=0.01 * fade,
