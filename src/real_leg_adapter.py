@@ -86,8 +86,9 @@ class FourBarConfig:
     ground_mm: float = 164.0
     knee_offset_deg: float = 28.0
     motor2_zero_trim_deg: float = 18.0
-    calf_motor_min_deg: float = 0.0
-    calf_motor_max_deg: float = 165.0
+    knee_home_deg: float = -156.0
+    calf_motor_min_deg: float = -140.0
+    calf_motor_max_deg: float = 0.0
 
 
 class RealLegCommandAdapter:
@@ -104,8 +105,8 @@ class RealLegCommandAdapter:
        我们自己定义的通用机械关节角，用来统一运动学、实机零位和方向。
        hip_abduction = 0 deg：腿不外摆/内收。
        thigh_pitch   = 0 deg：大腿竖直向下。
-       knee_pitch    = 0 deg：小腿和大腿共线。
-       knee_pitch 正方向：从 +Y 的位置看向 XZ 平面，逆时针为正。
+       knee_pitch    采用 Go2 小腿关节约定，膝盖弯曲为负数。
+       常用范围约为 -156 deg 到 -48 deg。
 
     3. bridge_cmd_deg：
        发给实机 bridge 的电机角度命令。
@@ -134,9 +135,9 @@ class RealLegCommandAdapter:
         self.knee_pitch_common = SimToCommonJoint(
             name="knee_pitch",
             sim_zero_deg=0.0,
-            direction=-1.0,
-            min_deg=0.0,
-            max_deg=160.0,
+            direction=1.0,
+            min_deg=-156.0,
+            max_deg=-48.0,
         )
 
         self.fourbar = FourBarConfig()
@@ -187,8 +188,11 @@ class RealLegCommandAdapter:
         hip_motor = common_joint_deg["hip_abduction"]
         thigh_motor = common_joint_deg["thigh_pitch"]
 
+        # common knee_pitch follows the Go2 joint convention:
+        # knee bending is negative, e.g. -90 deg.
+        # The four-bar solver below uses positive bend magnitude.
         calf_motor_unclamped = self.knee_pitch_to_calf_motor(
-            common_joint_deg["knee_pitch"]
+            -common_joint_deg["knee_pitch"]
         )
         calf_motor = max(
             self.fourbar.calf_motor_min_deg,
@@ -203,11 +207,25 @@ class RealLegCommandAdapter:
         }
 
     def knee_pitch_to_calf_motor(self, knee_pitch_deg):
-        # knee_pitch 是 common 层的等效膝关节角。
-        # 实机小腿电机不是膝关节本身，而是四连杆输入端。
-        # 因此这里先把 knee_pitch 转成四连杆摇杆目标 beta_des，
-        # 再反解输入曲柄 alpha，最后得到 calf_motor。
-        beta_des = knee_pitch_deg - self.fourbar.knee_offset_deg
+        # common knee_pitch follows the Go2 convention:
+        # knee bending is negative, e.g. -90 deg.
+        #
+        # The four-bar solver uses positive bend magnitude internally.
+        # It returns an absolute motor-side mechanism angle that includes
+        # the mechanical zero offset. We subtract the home absolute angle so
+        # the bridge command is relative to the real motor zero:
+        #
+        #   knee_home_deg = -156 deg -> calf_motor = 0 deg
+        #   less-bent knee           -> calf_motor < 0 deg
+        bend_deg = -knee_pitch_deg
+        home_bend_deg = -self.fourbar.knee_home_deg
+
+        abs_motor_deg = self.knee_bend_to_calf_motor_abs(bend_deg)
+        home_abs_motor_deg = self.knee_bend_to_calf_motor_abs(home_bend_deg)
+        return home_abs_motor_deg - abs_motor_deg
+
+    def knee_bend_to_calf_motor_abs(self, bend_deg):
+        beta_des = bend_deg - self.fourbar.knee_offset_deg
         alpha = self.inverse_fourbar_alpha(beta_des)
         return -2.0 * alpha - self.fourbar.motor2_zero_trim_deg
 

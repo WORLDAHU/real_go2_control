@@ -33,9 +33,9 @@ DEFAULT_MOTORS = {
         "label": "calf",
         "port": "/dev/ttyUSB3",
         "id": 1,
-        "direction": -1.0,
-        "min_deg": 0.0,
-        "max_deg": 120.0,
+        "direction": 1.0,
+        "min_deg": -140.0,
+        "max_deg": 0.0,
     },
 }
 
