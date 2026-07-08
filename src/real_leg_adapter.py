@@ -238,7 +238,7 @@ class RealLegCommandAdapter:
             name="thigh_pitch",
             sim_zero_deg=0.0,
             direction=1.0,
-            min_deg=-90.0,
+            min_deg=-30.0,
             max_deg=90.0,
         )
 

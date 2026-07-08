@@ -26,8 +26,8 @@ DEFAULT_MOTORS = {
         "port": "/dev/ttyUSB1",
         "id": 0,
         "direction": 1.0,
-        "min_deg": -45.0,
-        "max_deg": 45.0,
+        "min_deg": -30.0,
+        "max_deg": 90.0,
     },
     "calf_motor": {
         "label": "calf",
