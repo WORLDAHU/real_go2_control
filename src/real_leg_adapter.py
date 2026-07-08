@@ -50,7 +50,7 @@
      calf_motor_cmd_deg:
        发给 bridge 的真实小腿电机命令角。
        它是相对真实小腿电机零位的角度。
-       当前实机可动方向是负方向，有效范围约为 [-140, 0] deg。改了已经
+       当前实机可动方向是负方向，有效范围约为 [-180, 0] deg。
 
      crank_angle_deg:
        四连杆曲柄角。
@@ -85,7 +85,7 @@
        -> 膝盖从更弯曲状态逐渐伸开
 
    注意：
-   - bridge 的 calf_motor 限幅 [-140, 0] 只用于最终实机命令保护。
+   - bridge 的 calf_motor 限幅 [-180, 0] 只用于最终实机命令保护。
    - 四连杆内部求解应该使用 crank_min/max 等几何角范围。
    - 不要把 bridge 命令范围直接拿去当四连杆内部曲柄角范围。
    - 旧的 motor2_zero_trim_deg 语义容易混合电机角、齿轮角和曲柄角，
@@ -176,7 +176,7 @@ class FourBarConfig:
 
     # Final bridge command relative to the real motor zero.
     # For the calf setup, the allowed motion goes from 0 toward negative angle.
-    calf_motor_cmd_min_deg: float = -140.0
+    calf_motor_cmd_min_deg: float = -180.0
     calf_motor_cmd_max_deg: float = 0.0
 
     # The rocker and calf are fixed but not collinear. With the rocker angle's

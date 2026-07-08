@@ -30,7 +30,7 @@
      正角度   当前不允许用于实机动作。
 
    bridge 最终限幅为：
-     [-140, 0] deg
+     [-180, 0] deg
 
 2. crank_angle_deg
    四连杆曲柄角。
@@ -95,11 +95,11 @@
 2. knee -> rocker_target -> crank -> motor_cmd -> knee_back
    用于检查反解是否能回到目标 knee_pitch。
    其中 motor_cmd 是反解得到的理论命令，
-   clamped 是经过 bridge 命令限幅 [-140, 0] 后的实际可发送命令。现在改了
+   clamped 是经过 bridge 命令限幅 [-180, 0] 后的实际可发送命令。
 
 需要特别关注：
-   如果 motor_cmd 小于 -140 deg，说明目标 knee_pitch 超出了当前实机安全命令范围。
-   这时 bridge 会把命令夹到 -140 deg，真实小腿不能达到该目标角。
+   如果 motor_cmd 小于 -180 deg，说明目标 knee_pitch 超出了当前实机安全命令范围。
+   这时 bridge 会把命令夹到 -180 deg，真实小腿不能达到该目标角。
 """
 
 #!/usr/bin/env python3
@@ -140,7 +140,7 @@ def main():
 
     print("\ncalf_motor_cmd -> crank_angle -> rocker_angle -> knee_pitch")
     print(" motor_cmd    crank   rocker     knee")
-    for motor_cmd in [0.0, -10.0, -20.0, -40.0, -80.0, -120.0, -140.0]:
+    for motor_cmd in [0.0, -10.0, -20.0, -40.0, -80.0, -120.0, -140.0, -180.0]:
         crank = adapter.calf_motor_to_crank_angle(motor_cmd)
         rocker = adapter.crank_angle_to_rocker_angle(crank)
         knee = adapter.calf_motor_to_knee_pitch(motor_cmd)

@@ -34,7 +34,7 @@ DEFAULT_MOTORS = {
         "port": "/dev/ttyUSB3",
         "id": 1,
         "direction": 1.0,
-        "min_deg": -140.0,
+        "min_deg": -180.0,
         "max_deg": 0.0,
     },
 }

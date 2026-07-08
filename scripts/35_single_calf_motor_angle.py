@@ -117,7 +117,7 @@ def main():
     parser.add_argument("--direction", type=float, default=1.0)
     parser.add_argument("--calibrate", action="store_true")
     parser.add_argument("--angle-deg", type=float)
-    parser.add_argument("--min-deg", type=float, default=-140.0)
+    parser.add_argument("--min-deg", type=float, default=-180.0)
     parser.add_argument("--max-deg", type=float, default=0.0)
     parser.add_argument("--kp", type=float, default=0.15)
     parser.add_argument("--kd", type=float, default=0.025)
@@ -133,7 +133,7 @@ def main():
             check_angle_limit(args.angle_deg, args.min_deg, args.max_deg)
         except ValueError as exc:
             print(f"Refusing to move: {exc}")
-            print("For the current calf setup, use negative angles within [-140, 0] deg.")
+            print("For the current calf setup, use negative angles within [-180, 0] deg.")
             return
 
         if not HOME_FILE.exists():
