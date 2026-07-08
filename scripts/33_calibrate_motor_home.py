@@ -11,21 +11,21 @@ from pathlib import Path
 DEFAULT_MOTORS = {
     "hip_motor": {
         "label": "hip",
-        "port": "/dev/ttyUSB0",
+        "port": "/dev/ttyUSB2",
         "id": 2,
         "direction": 1.0,
     },
     "thigh_motor": {
         "label": "thigh",
-        "port": "/dev/ttyUSB2",
+        "port": "/dev/ttyUSB1",
         "id": 0,
         "direction": 1.0,
     },
     "calf_motor": {
         "label": "calf",
-        "port": "/dev/ttyUSB3",
+        "port": "/dev/ttyUSB0",
         "id": 1,
-        "direction": -1.0,
+        "direction": 1.0,
     },
 }
 

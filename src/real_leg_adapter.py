@@ -253,9 +253,9 @@ class RealLegCommandAdapter:
         self.fourbar = FourBarConfig()
 
         self.motor_config = {
-            "hip_motor": {"port": "/dev/ttyUSB0", "id": 2, "dir": 1},
-            "thigh_motor": {"port": "/dev/ttyUSB2", "id": 0, "dir": 1},
-            "calf_motor": {"port": "/dev/ttyUSB3", "id": 1, "dir": 1},
+            "hip_motor": {"port": "/dev/ttyUSB2", "id": 2, "dir": 1},
+            "thigh_motor": {"port": "/dev/ttyUSB1", "id": 0, "dir": 1},
+            "calf_motor": {"port": "/dev/ttyUSB0", "id": 1, "dir": 1},
         }
 
     def q_des_to_command(self, q_des_rad):

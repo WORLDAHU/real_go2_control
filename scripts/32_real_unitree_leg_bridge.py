@@ -15,7 +15,7 @@ MOTOR_NAMES = ("hip_motor", "thigh_motor", "calf_motor")
 DEFAULT_MOTORS = {
     "hip_motor": {
         "label": "hip",
-        "port": "/dev/ttyUSB0",
+        "port": "/dev/ttyUSB2",
         "id": 2,
         "direction": 1.0,
         "min_deg": -30.0,
@@ -23,7 +23,7 @@ DEFAULT_MOTORS = {
     },
     "thigh_motor": {
         "label": "thigh",
-        "port": "/dev/ttyUSB2",
+        "port": "/dev/ttyUSB1",
         "id": 0,
         "direction": 1.0,
         "min_deg": -45.0,
@@ -31,7 +31,7 @@ DEFAULT_MOTORS = {
     },
     "calf_motor": {
         "label": "calf",
-        "port": "/dev/ttyUSB3",
+        "port": "/dev/ttyUSB0",
         "id": 1,
         "direction": 1.0,
         "min_deg": -180.0,
