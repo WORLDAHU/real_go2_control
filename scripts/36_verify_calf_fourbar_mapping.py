@@ -95,7 +95,7 @@
 2. knee -> rocker_target -> crank -> motor_cmd -> knee_back
    用于检查反解是否能回到目标 knee_pitch。
    其中 motor_cmd 是反解得到的理论命令，
-   clamped 是经过 bridge 命令限幅 [-140, 0] 后的实际可发送命令。
+   clamped 是经过 bridge 命令限幅 [-140, 0] 后的实际可发送命令。现在是165
 
 需要特别关注：
    如果 motor_cmd 小于 -140 deg，说明目标 knee_pitch 超出了当前实机安全命令范围。
