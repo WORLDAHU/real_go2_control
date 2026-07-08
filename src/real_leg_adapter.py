@@ -25,12 +25,14 @@
    准备发给实机 bridge 的电机角度命令。
      hip_motor   当前由 hip_abduction 直接得到。
      thigh_motor 当前由 thigh_pitch 直接得到。
-     calf_motor  由 knee_pitch 经过四连杆反解得到。
+     calf_motor  由 knee_pitch 经过四连杆反解得到；物理内部记为 calf_motor_cmd_deg。
      calf_motor_unclamped 是限幅前结果，用来检查四连杆映射是否异常。
 
 注意：
 - hip/thigh 后续如果发现实机零位或方向不同，应该改 sim_zero_deg 或 direction。
 - calf_motor 不能直接等于 calf_joint，也不能直接等于 knee_pitch，因为实机小腿有四连杆。
+- 小腿四连杆内部链路是：
+  calf_motor_cmd_deg -> crank_angle_deg -> rocker_angle_deg -> knee_pitch。
 """
 
 
@@ -40,6 +42,18 @@
 
 import math
 from dataclasses import dataclass
+
+
+def wrap_deg_360(angle_deg):
+    return angle_deg % 360.0
+
+
+def wrap_deg_180(angle_deg):
+    return (angle_deg + 180.0) % 360.0 - 180.0
+
+
+def angle_error_deg(a_deg, b_deg):
+    return abs(wrap_deg_180(a_deg - b_deg))
 
 
 # 单关节的 sim -> common 映射配置。
@@ -71,24 +85,62 @@ class SimToCommonJoint:
 # 小腿四连杆参数。
 #
 # 仿真里的 calf_joint 是等效膝关节角；
-# 实机里的 calf_motor 是四连杆输入电机角。
+# 实机里的 calf_motor_cmd 是发给真实小腿电机的相对零位命令角。
 #
-# 所以小腿角度链路是：
-#   calf_joint -> knee_pitch -> 四连杆反解 -> calf_motor
+# 这里把物理链路拆开命名：
+#   calf_motor_cmd_deg  ->  crank_angle_deg
+#   crank_angle_deg     ->  rocker_angle_deg
+#   rocker_angle_deg    ->  calf/knee mechanical angle
 #
 # 不能直接写：
-#   calf_motor = calf_joint
+#   calf_motor_cmd_deg = calf_joint
 @dataclass
 class FourBarConfig:
-    crank_mm: float = 35.7#实际是35.7，有误差
+    crank_mm: float = 35.7
     coupler_mm: float = 150.0
     rocker_mm: float = 30.0
     ground_mm: float = 164.0
-    knee_offset_deg: float = 28.0
-    motor2_zero_trim_deg: float = 18.0
-    knee_home_deg: float = -156.0
-    calf_motor_min_deg: float = -140.0
-    calf_motor_max_deg: float = 0.0
+
+    # Go2 small-calf convention: knee bending is negative.
+    # At calf_motor_cmd_deg = 0, the measured/modelled calf angle is about -160.59 deg.
+    knee_pitch_home_deg: float = -160.59
+
+    # Four-bar crank angle. The reference ray points from the crank pivot to the
+    # rocker pivot. At real motor zero, the big gear and crank are fixed here.
+    crank_home_deg: float = 10.0
+    crank_min_deg: float = 0.0
+    crank_max_deg: float = 165.0
+
+    # Gear/sign relation between the bridge command and the crank.
+    # A negative motor command increases the crank angle:
+    #   crank_angle = crank_home + calf_motor_cmd * crank_deg_per_motor_deg
+    crank_deg_per_motor_deg: float = -0.5
+
+    # Final bridge command relative to the real motor zero.
+    # For the calf setup, the allowed motion goes from 0 toward negative angle.
+    calf_motor_cmd_min_deg: float = -140.0
+    calf_motor_cmd_max_deg: float = 0.0
+
+    # The rocker and calf are fixed but not collinear. With the rocker angle's
+    # positive direction, the calf angle is rocker + (180 - 28) deg.
+    rocker_to_calf_inner_deg: float = 28.0
+
+    @property
+    def calf_angle_offset_from_rocker_deg(self):
+        return 180.0 - self.rocker_to_calf_inner_deg
+
+    # Backward-compatible aliases for older debug snippets.
+    @property
+    def knee_home_deg(self):
+        return self.knee_pitch_home_deg
+
+    @property
+    def calf_motor_min_deg(self):
+        return self.calf_motor_cmd_min_deg
+
+    @property
+    def calf_motor_max_deg(self):
+        return self.calf_motor_cmd_max_deg
 
 
 class RealLegCommandAdapter:
@@ -112,7 +164,7 @@ class RealLegCommandAdapter:
        发给实机 bridge 的电机角度命令。
        hip_motor   由 hip_abduction 直接得到，后续可加零位/方向修正。
        thigh_motor 由 thigh_pitch 直接得到，后续可加零位/方向修正。
-       calf_motor  由 knee_pitch 经过四连杆反解得到。
+       calf_motor  是相对真实小腿电机零位的命令角，经过四连杆反解得到。
        calf_motor_unclamped 表示限幅前的小腿电机角，用来调试四连杆映射是否异常。
     """
     def __init__(self):
@@ -136,7 +188,7 @@ class RealLegCommandAdapter:
             name="knee_pitch",
             sim_zero_deg=0.0,
             direction=1.0,
-            min_deg=-156.0,
+            min_deg=-160.59,
             max_deg=-48.0,
         )
 
@@ -145,7 +197,7 @@ class RealLegCommandAdapter:
         self.motor_config = {
             "hip_motor": {"port": "/dev/ttyUSB0", "id": 2, "dir": 1},
             "thigh_motor": {"port": "/dev/ttyUSB2", "id": 0, "dir": 1},
-            "calf_motor": {"port": "/dev/ttyUSB3", "id": 1, "dir": -1},
+            "calf_motor": {"port": "/dev/ttyUSB3", "id": 1, "dir": 1},
         }
 
     def q_des_to_command(self, q_des_rad):
@@ -188,15 +240,12 @@ class RealLegCommandAdapter:
         hip_motor = common_joint_deg["hip_abduction"]
         thigh_motor = common_joint_deg["thigh_pitch"]
 
-        # common knee_pitch follows the Go2 joint convention:
-        # knee bending is negative, e.g. -90 deg.
-        # The four-bar solver below uses positive bend magnitude.
         calf_motor_unclamped = self.knee_pitch_to_calf_motor(
-            -common_joint_deg["knee_pitch"]
+            common_joint_deg["knee_pitch"]
         )
         calf_motor = max(
-            self.fourbar.calf_motor_min_deg,
-            min(self.fourbar.calf_motor_max_deg, calf_motor_unclamped),
+            self.fourbar.calf_motor_cmd_min_deg,
+            min(self.fourbar.calf_motor_cmd_max_deg, calf_motor_unclamped),
         )
 
         return {
@@ -210,55 +259,69 @@ class RealLegCommandAdapter:
         # common knee_pitch follows the Go2 convention:
         # knee bending is negative, e.g. -90 deg.
         #
-        # The four-bar solver uses positive bend magnitude internally.
-        # It returns an absolute motor-side mechanism angle that includes
-        # the mechanical zero offset. We subtract the home absolute angle so
-        # the bridge command is relative to the real motor zero:
-        #
-        #   knee_home_deg = -156 deg -> calf_motor = 0 deg
-        #   less-bent knee           -> calf_motor < 0 deg
-        bend_deg = -knee_pitch_deg
-        home_bend_deg = -self.fourbar.knee_home_deg
+        # The physical inverse chain is:
+        #   knee_pitch -> rocker target -> crank target -> motor command.
+        rocker_target_deg = self.knee_pitch_to_rocker_angle(knee_pitch_deg)
+        crank_target_deg = self.inverse_fourbar_crank_angle(rocker_target_deg)
+        return self.crank_angle_to_calf_motor(crank_target_deg)
 
-        abs_motor_deg = self.knee_bend_to_calf_motor_abs(bend_deg)
-        home_abs_motor_deg = self.knee_bend_to_calf_motor_abs(home_bend_deg)
-        return home_abs_motor_deg - abs_motor_deg
+    def calf_motor_to_knee_pitch(self, calf_motor_cmd_deg):
+        # Positive direction is the bridge command convention:
+        # command 0 is home; negative command increases the crank angle.
+        crank_angle_deg = self.calf_motor_to_crank_angle(calf_motor_cmd_deg)
+        rocker_angle_deg = self.crank_angle_to_rocker_angle(crank_angle_deg)
+        if rocker_angle_deg is None:
+            raise ValueError(
+                f"crank angle out of four-bar reach: {crank_angle_deg:.3f} deg"
+            )
 
-    def knee_bend_to_calf_motor_abs(self, bend_deg):
-        beta_des = bend_deg - self.fourbar.knee_offset_deg
-        alpha = self.inverse_fourbar_alpha(beta_des)
-        return -2.0 * alpha - self.fourbar.motor2_zero_trim_deg
+        calf_angle_deg = (
+            rocker_angle_deg + self.fourbar.calf_angle_offset_from_rocker_deg
+        )
+        return wrap_deg_180(calf_angle_deg)
 
-    def inverse_fourbar_alpha(self, beta_des_deg):
-        best_alpha = None
+    def calf_motor_to_crank_angle(self, calf_motor_cmd_deg):
+        cfg = self.fourbar
+        return cfg.crank_home_deg + calf_motor_cmd_deg * cfg.crank_deg_per_motor_deg
+
+    def crank_angle_to_calf_motor(self, crank_angle_deg):
+        cfg = self.fourbar
+        if cfg.crank_deg_per_motor_deg == 0.0:
+            raise ValueError("crank_deg_per_motor_deg cannot be zero")
+        return (crank_angle_deg - cfg.crank_home_deg) / cfg.crank_deg_per_motor_deg
+
+    def knee_pitch_to_rocker_angle(self, knee_pitch_deg):
+        calf_angle_deg = wrap_deg_360(knee_pitch_deg)
+        return wrap_deg_360(
+            calf_angle_deg - self.fourbar.calf_angle_offset_from_rocker_deg
+        )
+
+    def inverse_fourbar_crank_angle(self, rocker_target_deg):
+        best_crank = None
         best_err = 1e9
 
-        alpha_min = -(
-            self.fourbar.calf_motor_max_deg + self.fourbar.motor2_zero_trim_deg
-        ) / 2.0
-        alpha_max = -(
-            self.fourbar.calf_motor_min_deg + self.fourbar.motor2_zero_trim_deg
-        ) / 2.0
+        crank_min = max(self.fourbar.crank_min_deg, self.fourbar.crank_home_deg)
+        crank_max = self.fourbar.crank_max_deg
 
-        for i in range(1001):
-            alpha = alpha_min + (alpha_max - alpha_min) * i / 1000.0
-            beta = self.fourbar_beta(alpha)
-            if beta is None:
+        steps = 3000
+        for i in range(steps + 1):
+            crank_angle = crank_min + (crank_max - crank_min) * i / steps
+            rocker_angle = self.crank_angle_to_rocker_angle(crank_angle)
+            if rocker_angle is None:
                 continue
 
-            err = abs(beta - beta_des_deg)
-            err = min(err, 360.0 - err)
+            err = angle_error_deg(rocker_angle, rocker_target_deg)
 
             if err < best_err:
                 best_err = err
-                best_alpha = alpha
+                best_crank = crank_angle
 
-        if best_alpha is None:
-            return alpha_max
+        if best_crank is None:
+            return crank_min
 
-        return best_alpha
+        return best_crank
 
-    def fourbar_beta(self, alpha_deg):
+    def crank_angle_to_rocker_angle(self, crank_angle_deg):
         cfg = self.fourbar
 
         k1 = cfg.ground_mm / cfg.crank_mm
@@ -270,9 +333,9 @@ class RealLegCommandAdapter:
             + cfg.ground_mm**2
         ) / (2.0 * cfg.crank_mm * cfg.rocker_mm)
 
-        alpha = math.radians(alpha_deg)
-        ca = math.cos(alpha)
-        sa = math.sin(alpha)
+        crank_angle = math.radians(crank_angle_deg)
+        ca = math.cos(crank_angle)
+        sa = math.sin(crank_angle)
 
         a = ca - k1
         b = sa
@@ -282,6 +345,12 @@ class RealLegCommandAdapter:
         if disc < 0.0:
             return None
 
-        beta_raw = 2.0 * math.atan2(-b - math.sqrt(disc), c - a)
-        beta_user = 180.0 + math.degrees(beta_raw)
-        return beta_user % 360.0
+        rocker_raw = 2.0 * math.atan2(-b + math.sqrt(disc), c - a)
+        return wrap_deg_360(math.degrees(rocker_raw))
+
+    # Backward-compatible aliases for older debug snippets.
+    def inverse_fourbar_alpha(self, beta_des_deg):
+        return self.inverse_fourbar_crank_angle(beta_des_deg)
+
+    def fourbar_beta(self, alpha_deg):
+        return self.crank_angle_to_rocker_angle(alpha_deg)
