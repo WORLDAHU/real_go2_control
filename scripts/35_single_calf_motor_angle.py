@@ -89,6 +89,16 @@ def move_to_angle(sdk, serial, cmd, data, motor_id, q_home, gear, direction, ang
         time.sleep(0.01)
 
 
+def check_angle_limit(angle_deg, min_deg, max_deg):
+    if min_deg > max_deg:
+        raise ValueError(f"invalid angle limit: min {min_deg} > max {max_deg}")
+    if angle_deg < min_deg or angle_deg > max_deg:
+        raise ValueError(
+            f"angle {angle_deg:+.2f} deg is outside safe range "
+            f"[{min_deg:+.2f}, {max_deg:+.2f}] deg"
+        )
+
+
 def soft_release(sdk, serial, cmd, data, motor_id):
     for i in range(80):
         fade = 1.0 - i / 80.0
@@ -104,13 +114,31 @@ def main():
     parser.add_argument("--sdk-path", default="/home/claww/unitree_actuator_sdk/lib")
     parser.add_argument("--port", default="/dev/ttyUSB0")
     parser.add_argument("--id", type=int, default=1)
-    parser.add_argument("--direction", type=float, default=-1.0)
+    parser.add_argument("--direction", type=float, default=1.0)
     parser.add_argument("--calibrate", action="store_true")
     parser.add_argument("--angle-deg", type=float)
+    parser.add_argument("--min-deg", type=float, default=-140.0)
+    parser.add_argument("--max-deg", type=float, default=0.0)
     parser.add_argument("--kp", type=float, default=0.15)
     parser.add_argument("--kd", type=float, default=0.025)
     parser.add_argument("--ramp-sec", type=float, default=1.0)
     args = parser.parse_args()
+
+    if not args.calibrate and args.angle_deg is None:
+        print("Use --calibrate first, or use --angle-deg ANGLE.")
+        return
+
+    if not args.calibrate:
+        try:
+            check_angle_limit(args.angle_deg, args.min_deg, args.max_deg)
+        except ValueError as exc:
+            print(f"Refusing to move: {exc}")
+            print("For the current calf setup, use negative angles within [-140, 0] deg.")
+            return
+
+        if not HOME_FILE.exists():
+            print(f"Missing {HOME_FILE}. Run --calibrate first.")
+            return
 
     sdk = import_sdk(args.sdk_path)
     gear = float(sdk.queryGearRatio(sdk.MotorType.GO_M8010_6))
@@ -132,17 +160,10 @@ def main():
         print(f"q_home={q_home:.6f} rad, gear={gear:.6f}, err={err}")
         return
 
-    if args.angle_deg is None:
-        print("Use --calibrate first, or use --angle-deg ANGLE.")
-        return
-
-    if not HOME_FILE.exists():
-        print(f"Missing {HOME_FILE}. Run --calibrate first.")
-        return
-
     home = load_home(HOME_FILE)
     print(f"home file: {HOME_FILE}")
     print(f"port={args.port}, id={args.id}, direction={args.direction:+.0f}")
+    print(f"safe range=[{args.min_deg:+.2f}, {args.max_deg:+.2f}] deg")
     print(f"command angle={args.angle_deg:+.2f} deg")
     reply = input("Type YES to move calf motor: ").strip().upper()
     if reply != "YES":
