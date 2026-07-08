@@ -116,6 +116,29 @@ class MotorRuntime:
         self.cmd.tau = tau
         self.serial.sendRecv(self.cmd, self.data)
 
+    def send_stop(self):
+        self.init_cmd()
+        stop_mode = getattr(self.sdk.MotorMode, "STOP", None)
+        if stop_mode is not None:
+            try:
+                self.cmd.mode = self.sdk.queryMotorMode(
+                    self.sdk.MotorType.GO_M8010_6,
+                    stop_mode,
+                )
+            except Exception:
+                self.cmd.mode = 0
+        else:
+            self.cmd.mode = 0
+
+        self.data.motorType = self.sdk.MotorType.GO_M8010_6
+        self.cmd.motorType = self.sdk.MotorType.GO_M8010_6
+        self.cmd.q = 0.0
+        self.cmd.dq = 0.0
+        self.cmd.kp = 0.0
+        self.cmd.kd = 0.0
+        self.cmd.tau = 0.0
+        self.serial.sendRecv(self.cmd, self.data)
+
 
 class RealUnitreeLegBridge:
     def __init__(self, motors_cfg, enable_motors=False, sdk_path=None):
@@ -267,6 +290,12 @@ class RealUnitreeLegBridge:
             for name, rt in self.runtime.items():
                 cfg = self.motors_cfg[name]
                 rt.send_motor(rt.data.q, 0.0, KP * fade, KD * fade, 0.0)
+            time.sleep(DT)
+
+        print("[safe_stop_all] sending motor stop mode")
+        for _ in range(20):
+            for rt in self.runtime.values():
+                rt.send_stop()
             time.sleep(DT)
 
     def status(self):

@@ -64,6 +64,28 @@ def send_cmd(sdk, serial, cmd, data, motor_id, q, dq, kp, kd, tau):
     return float(data.q), float(data.dq), int(data.merror)
 
 
+def send_stop(sdk, serial, cmd, data, motor_id):
+    setup_cmd(sdk, cmd, motor_id)
+    stop_mode = getattr(sdk.MotorMode, "STOP", None)
+    if stop_mode is not None:
+        try:
+            cmd.mode = sdk.queryMotorMode(sdk.MotorType.GO_M8010_6, stop_mode)
+        except Exception:
+            cmd.mode = 0
+    else:
+        cmd.mode = 0
+
+    data.motorType = sdk.MotorType.GO_M8010_6
+    cmd.motorType = sdk.MotorType.GO_M8010_6
+    cmd.q = 0.0
+    cmd.dq = 0.0
+    cmd.kp = 0.0
+    cmd.kd = 0.0
+    cmd.tau = 0.0
+    serial.sendRecv(cmd, data)
+    return int(data.merror)
+
+
 def load_home(path):
     with open(path, "r", encoding="utf-8") as f:
         return json.load(f)
@@ -218,6 +240,11 @@ def soft_release(sdk, serial, cmd, data, motor_id, kp, kd):
             kd=kd * fade,
             tau=0.0,
         )
+        time.sleep(0.01)
+
+    print("send motor stop mode...")
+    for _ in range(20):
+        send_stop(sdk, serial, cmd, data, motor_id)
         time.sleep(0.01)
 
 
