@@ -1,39 +1,97 @@
-
 """
 实机单腿角度适配模块。
 
-这个文件只负责“角度名字和角度层级转换”，不直接控制电机，也不直接访问串口。
+这个文件只负责角度层级转换，不直接控制电机，也不直接访问串口。
 
 当前角度分三层：
 
 1. sim_joint_deg
-   MuJoCo / URDF 里的仿真关节角，来自 SingleLegSliderController 的 q_des。
-   顺序是：
+   MuJoCo / URDF 里的仿真关节角，来自单腿控制器输出的 q_des。
+   当前顺序是：
      q_des[0] -> hip_joint   -> RL_hip_joint
      q_des[1] -> thigh_joint -> RL_thigh_joint
      q_des[2] -> calf_joint  -> RL_calf_joint
 
+   其中 RL_calf_joint 使用 GO2 官方小腿关节角约定：
+     膝盖弯曲方向为负数。
+   例如：
+     sim calf_joint = -120 deg 表示膝盖处于弯曲状态。
+
 2. common_joint_deg
-   我们自己定义的通用机械关节角，用来统一运动学、机械零位、方向和实机测试。
-   这一层是以后讨论“腿怎么动”的主要坐标层。
-     hip_abduction = 0 deg：腿不外摆/内收。
-     thigh_pitch   = 0 deg：大腿竖直向下。
+   我们自己统一讨论用的机械关节角层。
+   这一层用于屏蔽仿真命名、实机零位、电机方向等差异，方便之后讨论机械状态。
+
+   当前定义：
+     hip_abduction = 0 deg：髋外展处于中位。
+     thigh_pitch   = 0 deg：大腿处于约定机械零位。
      knee_pitch    = 0 deg：小腿和大腿共线。
-     knee_pitch 正方向：从 +Y 的位置看向 XZ 平面，逆时针为正。
+
+   knee_pitch 采用 GO2 小腿关节约定：
+     膝盖弯曲为负数。
+   因此当前：
+     common knee_pitch = sim RL_calf_joint
+     direction = 1.0
+
+   例如：
+     sim RL_calf_joint = -120 deg
+     common knee_pitch = -120 deg
 
 3. bridge_cmd_deg
-   准备发给实机 bridge 的电机角度命令。
-     hip_motor   当前由 hip_abduction 直接得到。
-     thigh_motor 当前由 thigh_pitch 直接得到。
-     calf_motor  由 knee_pitch 经过四连杆反解得到；物理内部记为 calf_motor_cmd_deg。
-     calf_motor_unclamped 是限幅前结果，用来检查四连杆映射是否异常。
+   准备发给实机 bridge 的电机命令角。
 
-注意：
-- hip/thigh 后续如果发现实机零位或方向不同，应该改 sim_zero_deg 或 direction。
-- calf_motor 不能直接等于 calf_joint，也不能直接等于 knee_pitch，因为实机小腿有四连杆。
-- 小腿四连杆内部链路是：
-  calf_motor_cmd_deg -> crank_angle_deg -> rocker_angle_deg -> knee_pitch。
+   hip_motor / thigh_motor 当前暂时由 common 关节角直接得到。
+   calf_motor 不能直接等于 knee_pitch，因为真实小腿不是单一转轴直驱，
+   中间包含电机、小齿轮/大齿轮、曲柄、连杆、摇杆和小腿固连关系。
+
+   当前小腿物理链路定义为：
+     calf_motor_cmd_deg -> crank_angle_deg -> rocker_angle_deg -> knee_pitch
+
+   各变量含义：
+     calf_motor_cmd_deg:
+       发给 bridge 的真实小腿电机命令角。
+       它是相对真实小腿电机零位的角度。
+       当前实机可动方向是负方向，因此有效范围约为 [-140, 0] deg。
+
+     crank_angle_deg:
+       四连杆曲柄角。
+       曲柄与大齿轮固连。
+       角度基准是：从曲柄转轴指向摇杆转轴的机架射线。
+       当前电机命令为 0 deg 时，曲柄角由物理模型决定为 10 deg。
+
+     rocker_angle_deg:
+       四连杆摇杆角。
+       角度基准与曲柄角平行，也是相对于机架方向定义。
+       在 calf_motor_cmd_deg = 0 时，几何计算得到 rocker_angle_deg 约为 47.4 deg。
+
+     knee_pitch:
+       最终小腿/膝盖机械角。
+       摇杆和小腿固连，但二者不共线。
+       当前物理模型中二者夹角为 28 deg，因此：
+         knee_pitch = wrap180(rocker_angle_deg + (180 - 28))
+                    = wrap180(rocker_angle_deg + 152)
+
+   当前零位关系：
+     calf_motor_cmd_deg = 0
+       -> crank_angle_deg ≈ 10 deg
+       -> rocker_angle_deg ≈ 47.4 deg
+       -> knee_pitch ≈ wrap180(47.4 + 152)
+       -> knee_pitch ≈ -160.6 deg
+
+   当前方向关系：
+     calf_motor_cmd_deg 减小，也就是往负方向运动
+       -> crank_angle_deg 增大
+       -> rocker_angle_deg 增大
+       -> knee_pitch 增大，但仍然通常保持为负数
+       -> 膝盖从更弯曲状态逐渐伸开
+
+   注意：
+   - bridge 的 calf_motor 限幅 [-140, 0] 只用于最终实机命令保护。
+   - 四连杆内部求解应该使用 crank_min/max 等几何角范围。
+   - 不要把 bridge 命令范围直接拿去当四连杆内部曲柄角范围。
+   - 旧的 motor2_zero_trim_deg 语义容易混合电机角、齿轮角和曲柄角，
+     当前已拆成 crank_home_deg、crank_deg_per_motor_deg 等更明确的物理参数。
 """
+
 
 
 
