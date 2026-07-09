@@ -41,8 +41,8 @@ DEFAULT_MOTORS = {
 
 KP = 0.2
 KD = 0.02
-DT = 0.005
-RAMP_TIME = 0.35
+DT = 0.02
+RAMP_TIME = 0.05
 HOME_FILE = os.path.expanduser("~/motor_home.json")
 
 
@@ -141,13 +141,28 @@ class MotorRuntime:
 
 
 class RealUnitreeLegBridge:
-    def __init__(self, motors_cfg, enable_motors=False, sdk_path=None):
+    def __init__(
+        self,
+        motors_cfg,
+        enable_motors=False,
+        sdk_path=None,
+        kp=KP,
+        kd=KD,
+        dt=DT,
+        ramp_time=RAMP_TIME,
+    ):
         self.motors_cfg = motors_cfg
         self.enable_motors = enable_motors
         self.sdk_path = sdk_path
+        self.kp = kp
+        self.kd = kd
+        self.dt = dt
+        self.ramp_time = ramp_time
 
         self.lock = threading.Lock()
         self.running = True
+        self.stopped = False
+        self.stopping = False
         self.motors_ready = False
         self.gear = None
         self.sdk = None
@@ -237,15 +252,15 @@ class RealUnitreeLegBridge:
                         ramp_t0[name] = now
 
                     elapsed = now - ramp_t0.get(name, now)
-                    ratio = min(max(elapsed / RAMP_TIME, 0.0), 1.0)
+                    ratio = min(max(elapsed / self.ramp_time, 0.0), 1.0)
                     ease = 0.5 - 0.5 * math.cos(math.pi * ratio)
 
                     q_target = joint_to_rotor(target_joint, rt.q_home, self.gear)
                     q_start = ramp_q0.get(name, q_target)
                     q_cmd = q_start + (q_target - q_start) * ease
-                    dq_ff = (q_target - q_start) / RAMP_TIME if ratio < 1.0 else 0.0
+                    dq_ff = (q_target - q_start) / self.ramp_time if ratio < 1.0 else 0.0
 
-                    rt.send_motor(q_cmd, dq_ff, KP, KD, 0.0)
+                    rt.send_motor(q_cmd, dq_ff, self.kp, self.kd, 0.0)
 
                     joint_now = rotor_to_joint(rt.data.q, rt.q_home, self.gear)
                     with self.lock:
@@ -254,7 +269,7 @@ class RealUnitreeLegBridge:
                     if rt.data.merror != 0:
                         print(f"WARNING {name} merror={rt.data.merror}")
 
-                time.sleep(DT)
+                time.sleep(self.dt)
 
         except Exception as exc:
             self.last_error = str(exc)
@@ -283,20 +298,28 @@ class RealUnitreeLegBridge:
     def safe_stop_all(self):
         if not self.enable_motors or not self.runtime:
             return
+        if self.stopped or self.stopping:
+            return
+
+        self.stopping = True
 
         print("[safe_stop_all] fading kp/kd")
-        for step in range(200):
-            fade = 1.0 - step / 200.0
+        fade_steps = max(1, int(1.0 / self.dt))
+        for step in range(fade_steps):
+            fade = 1.0 - step / fade_steps
             for name, rt in self.runtime.items():
                 cfg = self.motors_cfg[name]
-                rt.send_motor(rt.data.q, 0.0, KP * fade, KD * fade, 0.0)
-            time.sleep(DT)
+                rt.send_motor(rt.data.q, 0.0, self.kp * fade, self.kd * fade, 0.0)
+            time.sleep(self.dt)
 
         print("[safe_stop_all] sending motor stop mode")
         for _ in range(20):
             for rt in self.runtime.values():
                 rt.send_stop()
-            time.sleep(DT)
+            time.sleep(self.dt)
+
+        self.stopped = True
+        self.stopping = False
 
     def status(self):
         with self.lock:
@@ -307,6 +330,10 @@ class RealUnitreeLegBridge:
                 "target_deg": dict(self.target_deg),
                 "current_deg": dict(self.current_deg),
                 "last_error": self.last_error,
+                "kp": self.kp,
+                "kd": self.kd,
+                "dt": self.dt,
+                "ramp_time": self.ramp_time,
             }
 
     def stop(self):
@@ -388,16 +415,40 @@ def main():
         default=None,
         help="Folder containing unitree_actuator_sdk.py or compiled SDK module.",
     )
+    parser.add_argument("--kp", type=float, default=KP)
+    parser.add_argument("--kd", type=float, default=KD)
+    parser.add_argument(
+        "--dt",
+        type=float,
+        default=DT,
+        help="Bridge control loop period in seconds. Use 0.02 for stable 3-USB tests.",
+    )
+    parser.add_argument(
+        "--ramp-time",
+        type=float,
+        default=RAMP_TIME,
+        help="Internal target smoothing time. Keep small when streaming smooth trajectories.",
+    )
     args = parser.parse_args()
+
+    if args.dt <= 0.0:
+        raise ValueError("--dt must be positive")
+    if args.ramp_time <= 0.0:
+        raise ValueError("--ramp-time must be positive")
 
     bridge = RealUnitreeLegBridge(
         motors_cfg=DEFAULT_MOTORS,
         enable_motors=args.enable_motors,
         sdk_path=args.sdk_path,
+        kp=args.kp,
+        kd=args.kd,
+        dt=args.dt,
+        ramp_time=args.ramp_time,
     )
 
     print("real Unitree leg bridge")
     print(f"enable_motors: {args.enable_motors}")
+    print(f"kp={args.kp:.3f} kd={args.kd:.3f} dt={args.dt:.3f}s ramp_time={args.ramp_time:.3f}s")
     print(f"POST http://{args.host}:{args.port}/set_motor_commands")
     print(f"GET  http://{args.host}:{args.port}/status")
     print(f"POST http://{args.host}:{args.port}/stop")
