@@ -27,13 +27,42 @@ PRESETS = {
         {"name": "neutral", "hip": 0.0, "thigh": 0.0, "calf": -20.0, "move": 1.0, "hold": 1.0},
     ],
     # Still slow, but closer to a push preview. Use only after micro is clean.
+
+    # "push_preview": [
+    #     {"name": "neutral", "hip": 0.0, "thigh": 0.0, "calf": -30.0, "move": 1.0, "hold": 0.8},
+    #     {"name": "deeper_load", "hip": 0.0, "thigh": -20.0, "calf": -80.0, "move": 1.5, "hold": 0.8},
+    #     {"name": "slow_push", "hip": 0.0, "thigh": -35.0, "calf": -150.0, "move": 1.0, "hold": 0.8},
+    #     {"name": "recover", "hip": 0.0, "thigh": -5.0, "calf": -70.0, "move": 1.2, "hold": 0.8},
+    #     {"name": "neutral", "hip": 0.0, "thigh": 0.0, "calf": -30.0, "move": 1.0, "hold": 1.0},
+    # ],
+
+    # # 快一点
+    # "push_preview": [
+    #     {"name": "neutral",      "hip": 0.0, "thigh": 0.0,  "calf": -30.0,  "move": 0.8, "hold": 0.6},
+    #     {"name": "deeper_load",  "hip": 0.0, "thigh": -20.0, "calf": -80.0,  "move": 1.2, "hold": 0.6},
+    #     {"name": "slow_push",    "hip": 0.0, "thigh": -35.0, "calf": -150.0, "move": 0.8, "hold": 0.6},
+    #     {"name": "recover",      "hip": 0.0, "thigh": -5.0,  "calf": -70.0,  "move": 1.0, "hold": 0.6},
+    #     {"name": "neutral",      "hip": 0.0, "thigh": 0.0,  "calf": -30.0,  "move": 0.8, "hold": 0.8},
+    # ],
+    # 更快一点,  
+    # --kp 0.20 \
+    #--kd 0.02
     "push_preview": [
-        {"name": "neutral", "hip": 0.0, "thigh": 0.0, "calf": -30.0, "move": 1.0, "hold": 0.8},
-        {"name": "deeper_load", "hip": 0.0, "thigh": -20.0, "calf": -80.0, "move": 1.5, "hold": 0.8},
-        {"name": "slow_push", "hip": 0.0, "thigh": -35.0, "calf": -150.0, "move": 1.0, "hold": 0.8},
-        {"name": "recover", "hip": 0.0, "thigh": -5.0, "calf": -70.0, "move": 1.2, "hold": 0.8},
-        {"name": "neutral", "hip": 0.0, "thigh": 0.0, "calf": -30.0, "move": 1.0, "hold": 1.0},
+    {"name": "neutral",      "hip": 0.0, "thigh": 0.0,  "calf": -30.0,  "move": 0.50, "hold": 0.30},
+    {"name": "deeper_load",  "hip": 0.0, "thigh": -20.0, "calf": -80.0,  "move": 0.75, "hold": 0.35},
+    {"name": "slow_push",    "hip": 0.0, "thigh": -35.0, "calf": -150.0, "move": 0.50, "hold": 0.30},
+    {"name": "recover",      "hip": 0.0, "thigh": -5.0,  "calf": -70.0,  "move": 0.65, "hold": 0.35},
+    {"name": "neutral",      "hip": 0.0, "thigh": 0.0,  "calf": -30.0,  "move": 0.50, "hold": 0.50},
     ],
+    # # 更快一点,
+    # "push_preview": [
+    # {"name": "neutral",      "hip": 0.0, "thigh": 0.0,  "calf": -30.0,  "move": 0.3, "hold": 0.18},
+    # {"name": "deeper_load",  "hip": 0.0, "thigh": -20.0, "calf": -80.0,  "move": 0.45, "hold": 0.20},
+    # {"name": "slow_push",    "hip": 0.0, "thigh": -35.0, "calf": -150.0, "move": 0.3, "hold": 0.18},
+    # {"name": "recover",      "hip": 0.0, "thigh": -5.0,  "calf": -70.0,  "move": 0.39, "hold": 0.20},
+    # {"name": "neutral",      "hip": 0.0, "thigh": 0.0,  "calf": -30.0,  "move": 0.30, "hold": 0.18},
+    # ],
+
 }
 
 

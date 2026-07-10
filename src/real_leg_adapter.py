@@ -234,7 +234,7 @@ class FourBarConfig:
 class RealLegCommandAdapter:
     """
     三层角度适配：
-
+    注意区分上电零点标定
     1. sim_joint_deg：
        MuJoCo / URDF 里的仿真关节角，直接来自当前单腿模型。
        hip_joint   = RL_hip_joint

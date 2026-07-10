@@ -65,6 +65,9 @@ calf bridge=0 已经对应 crank=10 deg、knee 约 -160.59 deg。
 
 释放全部电机。脚本会先保持当前读数、逐步降刚度，再发 mode=0，避免错误
 地向 q=0 运动：
+如果之前开了bride，先停止 bridge。它会安全降刚度并 stop
+
+    curl -X POST http://127.0.0.1:8765/stop
 
     /home/claww/miniforge3/envs/go2-convex-mpc/bin/python \
       scripts/39_release_leg_motors.py --motor all
@@ -116,11 +119,22 @@ calf bridge=0 已经对应 crank=10 deg、knee 约 -160.59 deg。
 每次只测试一个电机；支撑腿部，使用低 kp/kd，确认方向后再扩大范围。脚本
 结束会自动软释放该电机。
 
+避免 bridge 运行时执行 37；同一电机只能由一个进程控制。
+先关闭bridge，
+
+    curl -X POST http://127.0.0.1:8765/stop
+
+
 髋：bridge +5 deg：
 
     /home/claww/miniforge3/envs/go2-convex-mpc/bin/python \
       scripts/37_test_leg_motor_angle.py \
       --motor hip_motor --angle-deg 5 --kp 0.25 --kd 0.03 --hold-sec 2
+
+
+  
+
+
 
 大腿：bridge -5 deg。它使 common 大腿从标定的 +90 变成 +85。不要沿用旧
 约定下的 +5 deg：
@@ -134,7 +148,7 @@ calf bridge=0 已经对应 crank=10 deg、knee 约 -160.59 deg。
 
     /home/claww/miniforge3/envs/go2-convex-mpc/bin/python \
       scripts/37_test_leg_motor_angle.py \
-      --motor calf_motor --angle-deg -20 --kp 0.25 --kd 0.03 --hold-sec 2
+      --motor calf_motor --angle-deg 0 --kp 0.25 --kd 0.03 --hold-sec 2
 
 
 ============================================================================
@@ -162,11 +176,17 @@ calf bridge=0 已经对应 crank=10 deg、knee 约 -160.59 deg。
 三根 USB/RS485 推荐 50 Hz。普通连续轨迹的 ramp-time 保持小；首次归位使用
 独立的 3 秒 home-ramp-time，避免把一大段回位压缩到 0.05 秒：
 
-    /home/claww/miniforge3/envs/go2-convex-mpc/bin/python \
-      scripts/32_real_unitree_leg_bridge.py \
-      --sdk-path /home/claww/unitree_actuator_sdk/lib \
-      --enable-motors --dt 0.02 --ramp-time 0.05 --home-ramp-time 3.0 \
-      --kp 0.2 --kd 0.02
+/home/claww/miniforge3/envs/go2-convex-mpc/bin/python \
+  scripts/32_real_unitree_leg_bridge.py \
+  --sdk-path /home/claww/unitree_actuator_sdk/lib \
+  --enable-motors \
+  --dt 0.02 \
+  --ramp-time 0.05 \
+  --home-ramp-time 3.0 \
+  --kp 0.25 \
+  --kd 0.03
+  
+更改刚度
 
 出现启动确认提示后，先确认腿部回标定姿态的路径无碰撞，再输入：
 
@@ -214,9 +234,14 @@ bridge 正在运行且 /status 显示 motors_ready=true 时，在第二终端先
 
 仅在 micro 的方向、平滑性和机械余量全部干净时，再运行：
 
-    /home/claww/miniforge3/envs/go2-convex-mpc/bin/python \
-      scripts/38_real_leg_pose_sequence.py --preset push_preview --dt 0.05
 
+/home/claww/miniforge3/envs/go2-convex-mpc/bin/python \
+  scripts/38_real_leg_pose_sequence.py \
+  --preset push_preview \
+  --dt 0.05 \
+  --repeat 3
+
+  重复两次
 
 ============================================================================
 九、推荐安全顺序

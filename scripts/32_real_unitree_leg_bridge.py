@@ -8,7 +8,15 @@ import threading
 import time
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from pathlib import Path
+# 复用唯一的小腿四连杆模型，把 bridge 电机角转换回 common 机械角。
+# 这样 status、RL 和实机映射都使用同一套几何关系。
+SRC_DIR = Path(__file__).resolve().parents[1] / "src"
+if str(SRC_DIR) not in sys.path:
+    sys.path.insert(0, str(SRC_DIR))
 
+
+
+from real_leg_adapter import RealLegCommandAdapter
 
 MOTOR_NAMES = ("hip_motor", "thigh_motor", "calf_motor")
 
@@ -208,6 +216,14 @@ class RealUnitreeLegBridge:
         self.gear = None
         self.sdk = None
         self.runtime = {}
+
+        # 用于 bridge_cmd_deg -> common_joint_deg 的正向换算。
+        #
+        # bridge 坐标：
+        #   hip=0   -> common hip=0
+        #   thigh=0 -> common thigh=+90（大腿水平标定姿态）
+        #   calf=0  -> common knee≈-160.59（小腿收缩限位）
+        self.angle_adapter = RealLegCommandAdapter()
 
         self.target_deg = {name: 0.0 for name in MOTOR_NAMES}
         # 每个目标可拥有不同的缓动时间。正常 HTTP / 38 目标使用 ramp_time；
@@ -441,21 +457,115 @@ class RealUnitreeLegBridge:
         self.stopped = True
         self.stopping = False
 
+    def bridge_to_common_deg(self, bridge_deg):
+        """
+        将 bridge 电机坐标转换为固定 common 机械关节坐标。
+
+        bridge 坐标是“相对本次上电标定姿态”的执行器角；
+        common 坐标是仿真、RL、运动学讨论使用的固定机械角。
+
+        对髋：
+            common hip = bridge hip
+
+        对大腿：
+            标定时大腿水平，即 common thigh=+90 deg。
+            因此：
+                common thigh = bridge thigh + 90 deg
+
+        对小腿：
+            不能线性加偏置，必须经过四连杆正解：
+                calf bridge command
+                    -> crank
+                    -> rocker
+                    -> common knee_pitch
+        """
+        return {
+            "hip_abduction": float(bridge_deg["hip_motor"]),
+            "thigh_pitch": float(bridge_deg["thigh_motor"]) + 90.0,
+            "knee_pitch": self.angle_adapter.calf_motor_to_knee_pitch(
+                float(bridge_deg["calf_motor"])
+            ),
+        }
+
+    @staticmethod
+    def subtract_angles(target, current):
+        """
+        计算 target - current。
+
+        bridge 坐标和当前 common 工作范围都不会跨越 ±180 度，因此这里直接相减。
+        正误差表示“实际值还没有到目标值”。
+        """
+        return {
+            name: float(target[name]) - float(current[name])
+            for name in target
+        }
+
     def status(self):
+        """
+        HTTP GET /status 返回四类信息：
+
+        1. target_deg / current_deg
+           bridge 电机坐标；保留旧字段，兼容 38 等现有脚本。
+
+        2. target_common_deg / current_common_deg
+           换算后的固定机械关节坐标，供人工检查、日志和后续 RL 使用。
+
+        3. tracking_error_bridge_deg / tracking_error_common_deg
+           目标减实际。若误差长期很大，先检查是否有机械阻挡、刚度不足、
+           通信超时，或是否存在另一个程序同时控制同一电机。
+
+        4. common_mapping_error
+           四连杆正解失败时给出原因；正常情况下应为字符串空值。
+        """
         with self.lock:
-            return {
-                "ok": True,
-                "enable_motors": self.enable_motors,
-                "motors_ready": self.motors_ready,
-                "target_deg": dict(self.target_deg),
-                "current_deg": dict(self.current_deg),
-                "last_error": self.last_error,
-                "kp": self.kp,
-                "kd": self.kd,
-                "dt": self.dt,
-                "ramp_time": self.ramp_time,
-                "home_ramp_time": self.home_ramp_time,
-            }
+            target_bridge = dict(self.target_deg)
+            current_bridge = dict(self.current_deg)
+            last_error = self.last_error
+
+        common_mapping_error = ""
+        try:
+            target_common = self.bridge_to_common_deg(target_bridge)
+            current_common = self.bridge_to_common_deg(current_bridge)
+            tracking_error_common = self.subtract_angles(
+                target_common,
+                current_common,
+            )
+        except Exception as exc:
+            # 即使四连杆映射异常，也保留原始 bridge 坐标，方便定位问题。
+            target_common = {}
+            current_common = {}
+            tracking_error_common = {}
+            common_mapping_error = str(exc)
+
+        return {
+            "ok": True,
+            "enable_motors": self.enable_motors,
+            "motors_ready": self.motors_ready,
+
+            # 原有 bridge 坐标：相对上电标定姿态的电机命令/读数。
+            "target_deg": target_bridge,
+            "current_deg": current_bridge,
+            "tracking_error_bridge_deg": self.subtract_angles(
+                target_bridge,
+                current_bridge,
+            ),
+
+            # 新增 common 机械坐标：用于和仿真/RL 直接比较。
+            "target_common_deg": target_common,
+            "current_common_deg": current_common,
+            "tracking_error_common_deg": tracking_error_common,
+            "common_mapping_error": common_mapping_error,
+
+            "last_error": last_error,
+            "kp": self.kp,
+            "kd": self.kd,
+            "dt": self.dt,
+            "ramp_time": self.ramp_time,
+            "home_ramp_time": self.home_ramp_time,
+        }
+
+
+
 
     def stop(self):
         self.running = False
