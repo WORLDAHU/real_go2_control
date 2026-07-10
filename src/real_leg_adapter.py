@@ -139,6 +139,36 @@ class SimToCommonJoint:
         return max(self.min_deg, min(self.max_deg, common))
 
 
+@dataclass(frozen=True)
+class DirectMotorCalibration:
+    """
+    直驱关节的固定上电标定姿态。
+
+    本项目要区分两个坐标：
+
+    - common_joint_deg：固定机械角，用于仿真、RL 和运动学；不会因重启改变。
+    - bridge_cmd_deg：相对本次上电标定姿态的电机命令。bridge_cmd=0 表示
+      回到运行 33_calibrate_motor_home.py 时的人工摆放姿态。
+
+    common_at_calibration_deg 是该人工摆放姿态在 common 坐标中的值。
+    因此对直驱关节有：
+
+        bridge_cmd_deg = common_target_deg - common_at_calibration_deg
+
+    注意：这里刻意不处理电机 direction。bridge 在将 bridge_cmd_deg 转换为
+    转子编码器 q 时已经使用 direction；在这里再次乘 direction 会导致方向
+    被重复处理。
+    """
+    name: str
+    common_at_calibration_deg: float
+
+    def common_to_bridge_cmd(self, common_target_deg):
+        return float(common_target_deg) - self.common_at_calibration_deg
+
+    def bridge_cmd_to_common(self, bridge_cmd_deg):
+        return float(bridge_cmd_deg) + self.common_at_calibration_deg
+
+
 
 # 小腿四连杆参数。
 #
@@ -250,6 +280,28 @@ class RealLegCommandAdapter:
             max_deg=-48.0,
         )
 
+        # ====================================================================
+        # 固定上电标定姿态（不是全部关节的 common 机械零位）。
+        #
+        # 每次运行 scripts/33_calibrate_motor_home.py 前，人工应摆到：
+        #   hip   : common hip_abduction =   0.00 deg，无内外摆动
+        #   thigh : common thigh_pitch   = +90.00 deg，大腿水平
+        #   calf  : common knee_pitch    = -160.59 deg，曲柄 = +10.00 deg
+        #
+        # 在该姿态读到的转子 q 被保存为 q_home。此后 bridge_cmd=0 表示
+        # 回到该姿态。q_home 是编码器参考，不是 common 机械角的零点。
+        # ====================================================================
+        self.direct_motor_calibration = {
+            "hip_motor": DirectMotorCalibration(
+                name="hip_motor",
+                common_at_calibration_deg=0.0,
+            ),
+            "thigh_motor": DirectMotorCalibration(
+                name="thigh_motor",
+                common_at_calibration_deg=90.0,
+            ),
+        }
+
         self.fourbar = FourBarConfig()
 
         self.motor_config = {
@@ -295,9 +347,32 @@ class RealLegCommandAdapter:
         }
 
     def common_to_bridge_cmd_deg(self, common_joint_deg):
-        hip_motor = common_joint_deg["hip_abduction"]
-        thigh_motor = common_joint_deg["thigh_pitch"]
+        """
+        将固定 common 机械角转换为相对上电标定姿态的 bridge 电机命令。
 
+        髋和大腿是直驱关系：
+            hip_bridge_cmd   = common_hip   - 0
+            thigh_bridge_cmd = common_thigh - 90
+
+        所以大腿水平（common=+90）时 bridge 命令为 0；若目标是大腿
+        common=0 的机械零位，则 bridge 命令为 -90。这个 -90 不是新的
+        机械定义，而是从水平标定姿态返回机械零位所需的相对电机运动量。
+
+        小腿不能做同样的线性相减。当前 FourBarConfig 已经把：
+            calf bridge_cmd=0 <-> crank=10 <-> knee=-160.59
+        作为自身参考，因此小腿必须继续走四连杆反解。
+        """
+        hip_motor = self.direct_motor_calibration[
+            "hip_motor"
+        ].common_to_bridge_cmd(common_joint_deg["hip_abduction"])
+
+        thigh_motor = self.direct_motor_calibration[
+            "thigh_motor"
+        ].common_to_bridge_cmd(common_joint_deg["thigh_pitch"])
+
+        # 小腿标定姿态已经内置在 fourbar 的 crank_home_deg=10 和
+        # knee_pitch_home_deg=-160.59 中。不要额外做 knee + 160.59 的
+        # 线性偏置，否则会破坏齿轮和四连杆的非线性关系。
         calf_motor_unclamped = self.knee_pitch_to_calf_motor(
             common_joint_deg["knee_pitch"]
         )

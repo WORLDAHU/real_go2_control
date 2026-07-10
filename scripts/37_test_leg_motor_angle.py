@@ -10,6 +10,14 @@ from pathlib import Path
 
 HOME_FILE = os.path.expanduser("~/motor_home.json")
 
+# 与 33/32 一致：q_home 不是笼统的机械零位，而是在固定标定姿态记录的
+# 编码器参考。单电机脚本也必须拒绝旧格式或错误姿态的 home 文件。
+EXPECTED_CALIBRATION_REFERENCE = {
+    "hip_motor": {"common_deg": 0.0},
+    "thigh_motor": {"common_deg": 90.0},
+    "calf_motor": {"common_deg": -160.59, "crank_deg": 10.0},
+}
+
 DEFAULT_MOTORS = {
     "hip_motor": {
         "label": "hip",
@@ -24,8 +32,11 @@ DEFAULT_MOTORS = {
         "port": "/dev/ttyUSB1",
         "id": 0,
         "direction": 1.0,
-        "min_deg": -30.0,
-        "max_deg": 90.0,
+        # 这里的 angle-deg 是 bridge 坐标，不是 common thigh_pitch。
+        # 上电标定时大腿水平（common=+90）对应 bridge=0；若 common 安全
+        # 范围为 [-30, +90]，则 bridge 安全范围必须是 [-120, 0]。
+        "min_deg": -120.0,
+        "max_deg": 0.0,
     },
     "calf_motor": {
         "label": "calf",
@@ -102,6 +113,25 @@ def find_home_entry(home, motor_name, cfg):
     raise KeyError(
         f"cannot find home for {motor_name}: port={cfg['port']} id={cfg['id']}"
     )
+
+
+def validate_calibration_reference(entry, motor_name):
+    """拒绝不带固定标定姿态元数据的旧 q_home 文件。"""
+    ref = entry.get("calibration_reference")
+    if not isinstance(ref, dict):
+        raise ValueError(
+            f"{motor_name} home has no calibration_reference. "
+            "Re-run scripts/33_calibrate_motor_home.py at the fixed calibration pose."
+        )
+
+    for key, expected in EXPECTED_CALIBRATION_REFERENCE[motor_name].items():
+        actual = ref.get(key)
+        if actual is None or abs(float(actual) - expected) > 1e-6:
+            raise ValueError(
+                f"{motor_name} home calibration_reference[{key!r}]={actual!r}, "
+                f"expected {expected}. Re-run scripts/33_calibrate_motor_home.py "
+                "at the fixed calibration pose."
+            )
 
 
 def check_angle_limit(angle_deg, min_deg, max_deg):
@@ -285,6 +315,11 @@ def main():
 
     home = load_home(args.home_file)
     entry = find_home_entry(home, args.motor, cfg)
+    try:
+        validate_calibration_reference(entry, args.motor)
+    except ValueError as exc:
+        print(f"Refusing to move {args.motor}: {exc}")
+        return 1
     q_home = float(entry["q_home"])
     gear = float(entry.get("gear", 0.0))
 

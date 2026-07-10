@@ -8,26 +8,30 @@ import urllib.request
 
 MOTOR_LIMITS = {
     "hip_motor": (-30.0, 30.0),
-    "thigh_motor": (-30.0, 90.0),
+    # bridge thigh=0 是大腿水平的上电标定姿态（common thigh=+90），
+    # 不是 common thigh 的 0 度机械零位。
+    "thigh_motor": (-120.0, 0.0),
     "calf_motor": (-180.0, 0.0),
 }
 
 
 PRESETS = {
+    # 本文件的 hip/thigh/calf 均是 bridge_cmd_deg，不是 common_joint_deg。
+    # 特别是 thigh=0 表示大腿水平的上电标定姿态（common thigh=+90）。
     # First real-leg coordination test. This is intentionally not a jump.
     "micro": [
         {"name": "neutral", "hip": 0.0, "thigh": 0.0, "calf": -20.0, "move": 1.0, "hold": 1.0},
-        {"name": "load", "hip": 0.0, "thigh": 8.0, "calf": -45.0, "move": 1.2, "hold": 1.0},
+        {"name": "load", "hip": 0.0, "thigh": -8.0, "calf": -45.0, "move": 1.2, "hold": 1.0},
         {"name": "extend", "hip": 0.0, "thigh": -5.0, "calf": -80.0, "move": 1.2, "hold": 1.0},
-        {"name": "load", "hip": 0.0, "thigh": 8.0, "calf": -45.0, "move": 1.2, "hold": 0.6},
+        {"name": "load", "hip": 0.0, "thigh": -8.0, "calf": -45.0, "move": 1.2, "hold": 0.6},
         {"name": "neutral", "hip": 0.0, "thigh": 0.0, "calf": -20.0, "move": 1.0, "hold": 1.0},
     ],
     # Still slow, but closer to a push preview. Use only after micro is clean.
     "push_preview": [
         {"name": "neutral", "hip": 0.0, "thigh": 0.0, "calf": -30.0, "move": 1.0, "hold": 0.8},
-        {"name": "deeper_load", "hip": 0.0, "thigh": 20.0, "calf": -80.0, "move": 1.5, "hold": 0.8},
-        {"name": "slow_push", "hip": 0.0, "thigh": -15.0, "calf": -150.0, "move": 1.0, "hold": 0.8},
-        {"name": "recover", "hip": 0.0, "thigh": 5.0, "calf": -70.0, "move": 1.2, "hold": 0.8},
+        {"name": "deeper_load", "hip": 0.0, "thigh": -20.0, "calf": -80.0, "move": 1.5, "hold": 0.8},
+        {"name": "slow_push", "hip": 0.0, "thigh": -35.0, "calf": -150.0, "move": 1.0, "hold": 0.8},
+        {"name": "recover", "hip": 0.0, "thigh": -5.0, "calf": -70.0, "move": 1.2, "hold": 0.8},
         {"name": "neutral", "hip": 0.0, "thigh": 0.0, "calf": -30.0, "move": 1.0, "hold": 1.0},
     ],
 }

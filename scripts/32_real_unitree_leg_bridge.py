@@ -26,8 +26,11 @@ DEFAULT_MOTORS = {
         "port": "/dev/ttyUSB1",
         "id": 0,
         "direction": 1.0,
-        "min_deg": -30.0,
-        "max_deg": 90.0,
+        # bridge 坐标以“上电标定时的大腿水平”为 0 deg。
+        # common thigh 的机械安全范围仍为 [-30, +90] deg，标定姿态是
+        # common +90 deg，因此 bridge 范围为 [-30-90, +90-90] = [-120, 0]。
+        "min_deg": -120.0,
+        "max_deg": 0.0,
     },
     "calf_motor": {
         "label": "calf",
@@ -44,6 +47,14 @@ KD = 0.02
 DT = 0.02
 RAMP_TIME = 0.05
 HOME_FILE = os.path.expanduser("~/motor_home.json")
+
+# q_home 必须在这套固定标定姿态下记录。它用于防止旧的“所有关节机械零位”
+# 标定文件被误用于新的大腿水平标定约定。
+EXPECTED_CALIBRATION_REFERENCE = {
+    "hip_motor": {"common_deg": 0.0},
+    "thigh_motor": {"common_deg": 90.0},
+    "calf_motor": {"common_deg": -160.59, "crank_deg": 10.0},
+}
 
 
 def clamp_finite(value, lower, upper, name):
@@ -68,6 +79,31 @@ def joint_to_rotor(joint_deg, q_home, gear):
 
 def rotor_to_joint(rotor_rad, q_home, gear):
     return math.degrees((rotor_rad - q_home) / gear)
+
+
+def validate_calibration_reference(entry, motor_name):
+    """
+    确认 q_home 的物理含义与当前代码一致。
+
+    q_home 本身只是编码器数值，无法单独看出标定时腿摆在哪里。33 脚本会
+    把该姿态的 common 角写进 calibration_reference；这里强制检查它，避免
+    把按旧约定保存的 q_home 当成“大腿水平标定”的 q_home 使用。
+    """
+    ref = entry.get("calibration_reference")
+    if not isinstance(ref, dict):
+        raise ValueError(
+            f"{motor_name} home has no calibration_reference. "
+            "Re-run scripts/33_calibrate_motor_home.py at the fixed calibration pose."
+        )
+
+    for key, expected in EXPECTED_CALIBRATION_REFERENCE[motor_name].items():
+        actual = ref.get(key)
+        if actual is None or abs(float(actual) - expected) > 1e-6:
+            raise ValueError(
+                f"{motor_name} home calibration_reference[{key!r}]={actual!r}, "
+                f"expected {expected}. Re-run scripts/33_calibrate_motor_home.py "
+                "at the fixed calibration pose."
+            )
 
 
 class MotorRuntime:
@@ -204,6 +240,7 @@ class RealUnitreeLegBridge:
             cfg = self.motors_cfg[name]
             rt = MotorRuntime(cfg, self.sdk)
             entry = self.find_home_entry(home, name, cfg)
+            validate_calibration_reference(entry, name)
             rt.q_home = float(entry["q_home"])
             self.runtime[name] = rt
             print(
