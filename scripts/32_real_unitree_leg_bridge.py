@@ -587,18 +587,24 @@ def main():
     print(f"POST http://{args.host}:{args.port}/stop")
     print()
 
+    # 先占用 HTTP 端口，再打开电机串口、询问 YES、启动归位控制。
+    # 若已有 bridge 占用 8765，必须在任何电机命令之前失败；否则两个 bridge
+    # 可能同时向同一个 USB/RS485 电机发送命令。
     try:
-        bridge.start()
-    except Exception as exc:
-        print(f"bridge startup failed: {exc}")
+        server = HTTPServer((args.host, args.port), make_handler(bridge))
+    except OSError as exc:
+        print(f"bridge startup refused: cannot bind {args.host}:{args.port}: {exc}")
+        print("Another bridge may already be running. Stop it with:")
+        print(f"  curl -X POST http://{args.host}:{args.port}/stop")
         sys.exit(1)
 
-    server = HTTPServer((args.host, args.port), make_handler(bridge))
-
     try:
+        bridge.start()
         server.serve_forever()
     except KeyboardInterrupt:
         print("\nstopped by user")
+    except Exception as exc:
+        print(f"bridge startup/runtime failed: {exc}")
     finally:
         bridge.stop()
         server.server_close()
