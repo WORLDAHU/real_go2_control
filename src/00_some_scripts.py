@@ -141,13 +141,23 @@ calf bridge=0 已经对应 crank=10 deg、knee 约 -160.59 deg。
 六、启动三电机 bridge
 ============================================================================
 
-完成第三节标定后启动。三根 USB/RS485 推荐 50 Hz；ramp-time 保持小，避免
-上层已插值时再次缓动造成卡顿：
+完成第三节标定后启动。bridge 会先读取并校验 ~/motor_home.json，显示每台
+电机上次标定时间与固定姿态；只有输入大写 YES，才会自动慢速回到本次 q_home
+对应的 bridge 0/0/0 标定姿态。若没有文件、姿态元数据不匹配或未输入 YES，
+bridge 不会开始控制；应重新运行第三节的 33 标定。
+
+三根 USB/RS485 推荐 50 Hz。普通连续轨迹的 ramp-time 保持小；首次归位使用
+独立的 3 秒 home-ramp-time，避免把一大段回位压缩到 0.05 秒：
 
     /home/claww/miniforge3/envs/go2-convex-mpc/bin/python \
       scripts/32_real_unitree_leg_bridge.py \
       --sdk-path /home/claww/unitree_actuator_sdk/lib \
-      --enable-motors --dt 0.02 --ramp-time 0.05 --kp 0.2 --kd 0.02
+      --enable-motors --dt 0.02 --ramp-time 0.05 --home-ramp-time 3.0 \
+      --kp 0.2 --kd 0.02
+
+出现启动确认提示后，先确认腿部回标定姿态的路径无碰撞，再输入：
+
+    YES
 
 若有 CRC、timeout、短帧或电机无回应：先停止 bridge、检查接线，再将 bridge
 的 --dt 改慢到 0.03 或 0.05。38 的 --dt 是 HTTP 发送周期，不是通信周期。

@@ -46,6 +46,9 @@ KP = 0.2
 KD = 0.02
 DT = 0.02
 RAMP_TIME = 0.05
+# --ramp-time=0.05 适合 38/RL 连续小步轨迹，不适合启动时从任意姿态一次回到
+# 标定姿态。启动归位使用独立、较慢的时间，避免大角度命令产生很高的 dq_ff。
+HOME_RAMP_TIME = 3.0
 HOME_FILE = os.path.expanduser("~/motor_home.json")
 
 # q_home 必须在这套固定标定姿态下记录。它用于防止旧的“所有关节机械零位”
@@ -186,6 +189,7 @@ class RealUnitreeLegBridge:
         kd=KD,
         dt=DT,
         ramp_time=RAMP_TIME,
+        home_ramp_time=HOME_RAMP_TIME,
     ):
         self.motors_cfg = motors_cfg
         self.enable_motors = enable_motors
@@ -194,6 +198,7 @@ class RealUnitreeLegBridge:
         self.kd = kd
         self.dt = dt
         self.ramp_time = ramp_time
+        self.home_ramp_time = home_ramp_time
 
         self.lock = threading.Lock()
         self.running = True
@@ -205,6 +210,9 @@ class RealUnitreeLegBridge:
         self.runtime = {}
 
         self.target_deg = {name: 0.0 for name in MOTOR_NAMES}
+        # 每个目标可拥有不同的缓动时间。正常 HTTP / 38 目标使用 ramp_time；
+        # 启动回固定标定姿态使用更慢的 home_ramp_time。
+        self.target_ramp_time = {name: ramp_time for name in MOTOR_NAMES}
         self.current_deg = {name: 0.0 for name in MOTOR_NAMES}
         self.last_error = ""
 
@@ -231,22 +239,41 @@ class RealUnitreeLegBridge:
             return
 
         self.sdk = self.import_sdk()
-        home = load_home()
+        try:
+            home = load_home()
+        except FileNotFoundError as exc:
+            print("[startup] 未找到上电标定文件 ~/motor_home.json。")
+            print("[startup] 请先释放电机、摆到固定标定姿态，然后运行：")
+            print("  /home/claww/miniforge3/envs/go2-convex-mpc/bin/python \\")
+            print("    scripts/33_calibrate_motor_home.py \\")
+            print("    --sdk-path /home/claww/unitree_actuator_sdk/lib")
+            raise RuntimeError("cannot enable bridge without a valid motor home") from exc
         self.gear = self.sdk.queryGearRatio(self.sdk.MotorType.GO_M8010_6)
 
         print(f"gear ratio: {self.gear:.3f}")
 
-        for name in MOTOR_NAMES:
-            cfg = self.motors_cfg[name]
-            rt = MotorRuntime(cfg, self.sdk)
-            entry = self.find_home_entry(home, name, cfg)
-            validate_calibration_reference(entry, name)
-            rt.q_home = float(entry["q_home"])
-            self.runtime[name] = rt
-            print(
-                f"{name}: port={cfg['port']} id={cfg['id']} "
-                f"dir={cfg['direction']} home={rt.q_home:.6f} rad"
-            )
+        try:
+            for name in MOTOR_NAMES:
+                cfg = self.motors_cfg[name]
+                rt = MotorRuntime(cfg, self.sdk)
+                entry = self.find_home_entry(home, name, cfg)
+                validate_calibration_reference(entry, name)
+                rt.q_home = float(entry["q_home"])
+                self.runtime[name] = rt
+                reference = entry["calibration_reference"]
+                print(
+                    f"{name}: port={cfg['port']} id={cfg['id']} "
+                    f"dir={cfg['direction']} home={rt.q_home:.6f} rad"
+                )
+                print(
+                    f"  calibrated_at={entry.get('calibrated_at', 'unknown')} "
+                    f"common={reference.get('common_deg')} deg "
+                    f"({reference.get('description', '')})"
+                )
+        except (KeyError, ValueError) as exc:
+            print(f"[startup] 标定文件与当前固定标定姿态约定不匹配：{exc}")
+            print("[startup] 请重新运行 scripts/33_calibrate_motor_home.py 后再启动 bridge。")
+            raise RuntimeError("invalid motor home calibration") from exc
 
         print("reading current motor positions...")
         for name in MOTOR_NAMES:
@@ -261,14 +288,43 @@ class RealUnitreeLegBridge:
 
             print(f"{name}: current={joint_deg:.2f} deg")
 
+        print()
+        print("固定标定姿态将作为启动归位目标：")
+        print("  hip_motor=0 deg   ：髋无内外摆动")
+        print("  thigh_motor=0 deg ：大腿水平（common thigh=+90 deg）")
+        print("  calf_motor=0 deg  ：小腿完全收缩（crank=10 deg）")
+        print(
+            f"本次启动归位使用 {self.home_ramp_time:.2f} 秒缓动；普通 HTTP 目标 "
+            f"仍使用 {self.ramp_time:.2f} 秒缓动。"
+        )
+        reply = input(
+            "Type YES to slowly move to the fixed calibration pose; "
+            "otherwise bridge will stop and you should recalibrate: "
+        ).strip()
+        if reply != "YES":
+            print("启动已取消：未向标定姿态归位。请释放/摆腿后重新运行 33 标定。")
+            self.stop_all_immediately()
+            raise RuntimeError("startup cancelled; recalibration required")
+
+        # 首次控制循环会从刚才读取的实际 q 开始，以 home_ramp_time 缓动到
+        # bridge 0/0/0，也就是本次 q_home 对应的固定标定姿态。
+        with self.lock:
+            for name in MOTOR_NAMES:
+                self.target_deg[name] = 0.0
+                self.target_ramp_time[name] = self.home_ramp_time
+
+        print("[startup] 已确认：正在慢速回到固定标定姿态。")
         self.motors_ready = True
         thread = threading.Thread(target=self.control_loop, daemon=True)
         thread.start()
 
     def control_loop(self):
-        prev_target = dict(self.target_deg)
+        # 置空使启动确认后的 0/0/0 被识别为新目标；q_start 是启动时读取到
+        # 的实际转子位置，而不是 q_home。
+        prev_target = {}
         ramp_q0 = {}
         ramp_t0 = {}
+        ramp_duration = {}
 
         print("[REAL] control loop started")
 
@@ -282,20 +338,23 @@ class RealUnitreeLegBridge:
 
                     with self.lock:
                         target_joint = self.target_deg[name] * cfg["direction"]
+                        requested_ramp_time = self.target_ramp_time[name]
 
                     if abs(target_joint - prev_target.get(name, 999.0)) > 0.01:
                         prev_target[name] = target_joint
                         ramp_q0[name] = rt.data.q
                         ramp_t0[name] = now
+                        ramp_duration[name] = requested_ramp_time
 
                     elapsed = now - ramp_t0.get(name, now)
-                    ratio = min(max(elapsed / self.ramp_time, 0.0), 1.0)
+                    duration = ramp_duration.get(name, self.ramp_time)
+                    ratio = min(max(elapsed / duration, 0.0), 1.0)
                     ease = 0.5 - 0.5 * math.cos(math.pi * ratio)
 
                     q_target = joint_to_rotor(target_joint, rt.q_home, self.gear)
                     q_start = ramp_q0.get(name, q_target)
                     q_cmd = q_start + (q_target - q_start) * ease
-                    dq_ff = (q_target - q_start) / self.ramp_time if ratio < 1.0 else 0.0
+                    dq_ff = (q_target - q_start) / duration if ratio < 1.0 else 0.0
 
                     rt.send_motor(q_cmd, dq_ff, self.kp, self.kd, 0.0)
 
@@ -315,8 +374,17 @@ class RealUnitreeLegBridge:
             self.safe_stop_all()
             self.motors_ready = False
 
-    def set_targets(self, body):
+    def set_targets(self, body, ramp_time=None):
+        """
+        设置普通 HTTP / 38 / RL 目标。
+
+        未指定 ramp_time 时使用 --ramp-time；启动归位使用独立的
+        --home-ramp-time，避免单条 0/0/0 命令在 0.05 秒内跳变。
+        """
         new_targets = {}
+        requested_ramp_time = self.ramp_time if ramp_time is None else float(ramp_time)
+        if requested_ramp_time <= 0.0:
+            raise ValueError("ramp_time must be positive")
 
         for name in MOTOR_NAMES:
             cfg = self.motors_cfg[name]
@@ -329,8 +397,23 @@ class RealUnitreeLegBridge:
 
         with self.lock:
             self.target_deg.update(new_targets)
+            for name in MOTOR_NAMES:
+                self.target_ramp_time[name] = requested_ramp_time
 
         return new_targets
+
+    def stop_all_immediately(self):
+        """启动确认被取消时，仅发送 mode=0，不建立位置保持。"""
+        if not self.runtime:
+            return
+        print("[startup] sending motor stop mode")
+        for _ in range(3):
+            for rt in self.runtime.values():
+                rt.send_stop()
+            time.sleep(self.dt)
+        self.stopped = True
+        self.running = False
+        self.motors_ready = False
 
     def safe_stop_all(self):
         if not self.enable_motors or not self.runtime:
@@ -371,6 +454,7 @@ class RealUnitreeLegBridge:
                 "kd": self.kd,
                 "dt": self.dt,
                 "ramp_time": self.ramp_time,
+                "home_ramp_time": self.home_ramp_time,
             }
 
     def stop(self):
@@ -466,12 +550,20 @@ def main():
         default=RAMP_TIME,
         help="Internal target smoothing time. Keep small when streaming smooth trajectories.",
     )
+    parser.add_argument(
+        "--home-ramp-time",
+        type=float,
+        default=HOME_RAMP_TIME,
+        help="Seconds used only for confirmed startup motion to bridge 0/0/0.",
+    )
     args = parser.parse_args()
 
     if args.dt <= 0.0:
         raise ValueError("--dt must be positive")
     if args.ramp_time <= 0.0:
         raise ValueError("--ramp-time must be positive")
+    if args.home_ramp_time <= 0.0:
+        raise ValueError("--home-ramp-time must be positive")
 
     bridge = RealUnitreeLegBridge(
         motors_cfg=DEFAULT_MOTORS,
@@ -481,11 +573,15 @@ def main():
         kd=args.kd,
         dt=args.dt,
         ramp_time=args.ramp_time,
+        home_ramp_time=args.home_ramp_time,
     )
 
     print("real Unitree leg bridge")
     print(f"enable_motors: {args.enable_motors}")
-    print(f"kp={args.kp:.3f} kd={args.kd:.3f} dt={args.dt:.3f}s ramp_time={args.ramp_time:.3f}s")
+    print(
+        f"kp={args.kp:.3f} kd={args.kd:.3f} dt={args.dt:.3f}s "
+        f"ramp_time={args.ramp_time:.3f}s home_ramp_time={args.home_ramp_time:.3f}s"
+    )
     print(f"POST http://{args.host}:{args.port}/set_motor_commands")
     print(f"GET  http://{args.host}:{args.port}/status")
     print(f"POST http://{args.host}:{args.port}/stop")
