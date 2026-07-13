@@ -53,9 +53,10 @@ DEFAULT_MOTORS = {
 KP = 0.2
 KD = 0.02
 DT = 0.02
-RAMP_TIME = 0.05
-# --ramp-time=0.05 适合 38/RL 连续小步轨迹，不适合启动时从任意姿态一次回到
-# 标定姿态。启动归位使用独立、较慢的时间，避免大角度命令产生很高的 dq_ff。
+RAMP_TIME = 1.0
+MAX_COMMAND_SPEED_DEG_S = 20.0
+# 普通 HTTP 命令会同时受 ramp_time 和 MAX_COMMAND_SPEED_DEG_S 限制；即使调用者
+# 请求 0.05 秒，大角度阶跃也会自动延长。启动归位另用更慢的 home_ramp_time。
 HOME_RAMP_TIME = 3.0
 HOME_FILE = os.path.expanduser("~/motor_home.json")
 MAX_ABS_Q_HOME_RAD = 10000.0
@@ -73,7 +74,12 @@ def clamp_finite(value, lower, upper, name):
     value = float(value)
     if not math.isfinite(value):
         raise ValueError(f"{name} must be finite")
-    return max(lower, min(upper, value))
+    if value < lower or value > upper:
+        raise ValueError(
+            f"{name}={value:+.2f} deg outside safe range "
+            f"[{lower:+.2f}, {upper:+.2f}] deg"
+        )
+    return value
 
 
 def load_home(path=HOME_FILE):
@@ -178,7 +184,26 @@ class MotorRuntime:
         self.cmd.kp = kp
         self.cmd.kd = kd
         self.cmd.tau = tau
-        self.serial.sendRecv(self.cmd, self.data)
+        ok = bool(self.serial.sendRecv(self.cmd, self.data))
+        if not ok:
+            raise RuntimeError(
+                f"{self.cfg['label']} sendRecv timeout/no reply"
+            )
+        if not bool(self.data.correct):
+            raise RuntimeError(
+                f"{self.cfg['label']} invalid CRC/frame"
+            )
+        if int(self.data.motor_id) != int(self.cfg["id"]):
+            raise RuntimeError(
+                f"{self.cfg['label']} reply id={int(self.data.motor_id)}, "
+                f"expected {int(self.cfg['id'])}"
+            )
+        if not math.isfinite(float(self.data.q)):
+            raise RuntimeError(f"{self.cfg['label']} returned invalid q")
+        if int(self.data.merror) != 0:
+            raise RuntimeError(
+                f"{self.cfg['label']} motor fault merror={int(self.data.merror)}"
+            )
 
     def send_stop(self):
         self.init_cmd()
@@ -248,6 +273,7 @@ class RealUnitreeLegBridge:
         self.target_ramp_time = {name: ramp_time for name in MOTOR_NAMES}
         self.current_deg = {name: 0.0 for name in MOTOR_NAMES}
         self.last_error = ""
+        self.last_accepted_ramp_time = ramp_time
 
     def import_sdk(self):
         if self.sdk_path:
@@ -388,7 +414,15 @@ class RealUnitreeLegBridge:
                     q_target = joint_to_rotor(target_joint, rt.q_home, self.gear)
                     q_start = ramp_q0.get(name, q_target)
                     q_cmd = q_start + (q_target - q_start) * ease
-                    dq_ff = (q_target - q_start) / duration if ratio < 1.0 else 0.0
+                    dq_ff = (
+                        (q_target - q_start)
+                        * 0.5
+                        * math.pi
+                        / duration
+                        * math.sin(math.pi * ratio)
+                        if ratio < 1.0
+                        else 0.0
+                    )
 
                     rt.send_motor(q_cmd, dq_ff, self.kp, self.kd, 0.0)
 
@@ -396,28 +430,29 @@ class RealUnitreeLegBridge:
                     with self.lock:
                         self.current_deg[name] = joint_now * cfg["direction"]
 
-                    if rt.data.merror != 0:
-                        print(f"WARNING {name} merror={rt.data.merror}")
-
                 time.sleep(self.dt)
 
         except Exception as exc:
             self.last_error = str(exc)
-            print(f"control loop error: {exc}")
+            print(f"EMERGENCY STOP: {exc}")
+            self.stop_all_immediately()
         finally:
-            self.safe_stop_all()
             self.motors_ready = False
 
     def set_targets(self, body, ramp_time=None):
         """
         设置普通 HTTP / 38 / RL 目标。
 
-        未指定 ramp_time 时使用 --ramp-time；启动归位使用独立的
-        --home-ramp-time，避免单条 0/0/0 命令在 0.05 秒内跳变。
+        未指定 ramp_time 时使用 --ramp-time；无论调用者请求多短的时间，最终
+        轨迹都不能超过 MAX_COMMAND_SPEED_DEG_S。启动归位使用独立的
+        --home-ramp-time。
         """
         new_targets = {}
+        if not self.motors_ready or self.stopped or not self.running:
+            raise RuntimeError("bridge motors are not ready or a fault is latched")
+
         requested_ramp_time = self.ramp_time if ramp_time is None else float(ramp_time)
-        if requested_ramp_time <= 0.0:
+        if not math.isfinite(requested_ramp_time) or requested_ramp_time <= 0.0:
             raise ValueError("ramp_time must be positive")
 
         for name in MOTOR_NAMES:
@@ -430,9 +465,16 @@ class RealUnitreeLegBridge:
             )
 
         with self.lock:
+            required_ramp_time = max(
+                abs(new_targets[name] - self.current_deg[name])
+                / MAX_COMMAND_SPEED_DEG_S
+                for name in MOTOR_NAMES
+            )
+            effective_ramp_time = max(requested_ramp_time, required_ramp_time)
             self.target_deg.update(new_targets)
             for name in MOTOR_NAMES:
-                self.target_ramp_time[name] = requested_ramp_time
+                self.target_ramp_time[name] = effective_ramp_time
+            self.last_accepted_ramp_time = effective_ramp_time
 
         return new_targets
 
@@ -579,6 +621,8 @@ class RealUnitreeLegBridge:
             "kd": self.kd,
             "dt": self.dt,
             "ramp_time": self.ramp_time,
+            "last_accepted_ramp_time": self.last_accepted_ramp_time,
+            "max_command_speed_deg_s": MAX_COMMAND_SPEED_DEG_S,
             "home_ramp_time": self.home_ramp_time,
         }
 
@@ -630,7 +674,7 @@ def make_handler(bridge):
                     if name not in body:
                         raise ValueError(f"missing field: {name}")
 
-                accepted = bridge.set_targets(body)
+                accepted = bridge.set_targets(body, ramp_time=body.get("ramp_time"))
 
             except Exception as exc:
                 self.send_json({"ok": False, "error": str(exc)}, 400)
@@ -648,6 +692,7 @@ def make_handler(bridge):
                     "ok": True,
                     "enable_motors": bridge.enable_motors,
                     "target": accepted,
+                    "ramp_time": bridge.last_accepted_ramp_time,
                 }
             )
 
@@ -676,7 +721,7 @@ def main():
         "--ramp-time",
         type=float,
         default=RAMP_TIME,
-        help="Internal target smoothing time. Keep small when streaming smooth trajectories.",
+        help="Requested target smoothing time; the bridge also enforces a conservative speed limit.",
     )
     parser.add_argument(
         "--home-ramp-time",

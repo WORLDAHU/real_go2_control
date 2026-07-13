@@ -90,6 +90,23 @@ class MotorHomeSafetyTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "invalid q_home"):
             single_motor.validate_home_numeric(entry, "hip_motor")
 
+    def test_bridge_rejects_out_of_range_instead_of_clamping(self):
+        with self.assertRaisesRegex(ValueError, "outside safe range"):
+            bridge.clamp_finite(-130.0, -120.0, 0.0, "thigh_motor")
+
+    def test_bridge_applies_conservative_speed_limit(self):
+        controller = bridge.RealUnitreeLegBridge(
+            motors_cfg=bridge.DEFAULT_MOTORS,
+            enable_motors=False,
+        )
+        controller.motors_ready = True
+        accepted = controller.set_targets(
+            {"hip_motor": 0.0, "thigh_motor": -20.0, "calf_motor": -40.0},
+            ramp_time=0.05,
+        )
+        self.assertEqual(accepted["thigh_motor"], -20.0)
+        self.assertEqual(controller.last_accepted_ramp_time, 2.0)
+
 
 if __name__ == "__main__":
     unittest.main()
