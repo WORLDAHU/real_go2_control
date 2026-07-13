@@ -189,10 +189,6 @@ class FourBarConfig:
     rocker_mm: float = 30.0
     ground_mm: float = 164.0
 
-    # Go2 small-calf convention: knee bending is negative.
-    # At calf_motor_cmd_deg = 0, the measured/modelled calf angle is about -160.59 deg.
-    knee_pitch_home_deg: float = -160.59
-
     # Four-bar crank angle. The reference ray points from the crank pivot to the
     # rocker pivot. At real motor zero, the big gear and crank are fixed here.
     crank_home_deg: float = 10.0
@@ -216,6 +212,42 @@ class FourBarConfig:
     @property
     def calf_angle_offset_from_rocker_deg(self):
         return 180.0 - self.rocker_to_calf_inner_deg
+
+    def crank_angle_to_rocker_angle(self, crank_angle_deg):
+        """四连杆正解：由曲柄角计算摇杆角。"""
+        k1 = self.ground_mm / self.crank_mm
+        k2 = -self.ground_mm / self.rocker_mm
+        k3 = (
+            self.crank_mm**2
+            - self.coupler_mm**2
+            + self.rocker_mm**2
+            + self.ground_mm**2
+        ) / (2.0 * self.crank_mm * self.rocker_mm)
+
+        crank_angle = math.radians(crank_angle_deg)
+        ca = math.cos(crank_angle)
+        sa = math.sin(crank_angle)
+        a = ca - k1
+        b = sa
+        c = -(k2 * ca + k3)
+        disc = a * a + b * b - c * c
+        if disc < 0.0:
+            return None
+
+        rocker_raw = 2.0 * math.atan2(-b + math.sqrt(disc), c - a)
+        return wrap_deg_360(math.degrees(rocker_raw))
+
+    @property
+    def knee_pitch_home_deg(self):
+        """由曲柄标定角和当前四连杆几何自动计算标定膝角。"""
+        rocker_angle_deg = self.crank_angle_to_rocker_angle(self.crank_home_deg)
+        if rocker_angle_deg is None:
+            raise ValueError(
+                f"crank home angle out of four-bar reach: {self.crank_home_deg:.3f} deg"
+            )
+        return wrap_deg_180(
+            rocker_angle_deg + self.calf_angle_offset_from_rocker_deg
+        )
 
     # Backward-compatible aliases for older debug snippets.
     @property
@@ -256,6 +288,8 @@ class RealLegCommandAdapter:
        calf_motor_unclamped 表示限幅前的小腿电机角，用来调试四连杆映射是否异常。
     """
     def __init__(self):
+        self.fourbar = FourBarConfig()
+
         self.hip_abduction_common = SimToCommonJoint(
             name="hip_abduction",
             sim_zero_deg=0.0,
@@ -276,7 +310,7 @@ class RealLegCommandAdapter:
             name="knee_pitch",
             sim_zero_deg=0.0,
             direction=1.0,
-            min_deg=-160.59,
+            min_deg=self.fourbar.knee_pitch_home_deg,
             max_deg=-48.0,
         )
 
@@ -286,7 +320,7 @@ class RealLegCommandAdapter:
         # 每次运行 scripts/33_calibrate_motor_home.py 前，人工应摆到：
         #   hip   : common hip_abduction =   0.00 deg，无内外摆动
         #   thigh : common thigh_pitch   = +90.00 deg，大腿水平
-        #   calf  : common knee_pitch    = -160.59 deg，曲柄 = +10.00 deg
+        #   calf  : common knee_pitch 由四连杆几何自动计算，曲柄 = +10.00 deg
         #
         # 在该姿态读到的转子 q 被保存为 q_home。此后 bridge_cmd=0 表示
         # 回到该姿态。q_home 是编码器参考，不是 common 机械角的零点。
@@ -301,8 +335,6 @@ class RealLegCommandAdapter:
                 common_at_calibration_deg=90.0,
             ),
         }
-
-        self.fourbar = FourBarConfig()
 
         self.motor_config = {
             "hip_motor": {"port": "/dev/ttyUSB2", "id": 2, "dir": 1},
@@ -359,7 +391,7 @@ class RealLegCommandAdapter:
         机械定义，而是从水平标定姿态返回机械零位所需的相对电机运动量。
 
         小腿不能做同样的线性相减。当前 FourBarConfig 已经把：
-            calf bridge_cmd=0 <-> crank=10 <-> knee=-160.59
+            calf bridge_cmd=0 <-> crank=10 <-> knee 由四连杆正解计算
         作为自身参考，因此小腿必须继续走四连杆反解。
         """
         hip_motor = self.direct_motor_calibration[
@@ -371,7 +403,7 @@ class RealLegCommandAdapter:
         ].common_to_bridge_cmd(common_joint_deg["thigh_pitch"])
 
         # 小腿标定姿态已经内置在 fourbar 的 crank_home_deg=10 和
-        # knee_pitch_home_deg=-160.59 中。不要额外做 knee + 160.59 的
+        # knee_pitch_home_deg（自动计算）中。不要额外做线性 knee 偏置，
         # 线性偏置，否则会破坏齿轮和四连杆的非线性关系。
         calf_motor_unclamped = self.knee_pitch_to_calf_motor(
             common_joint_deg["knee_pitch"]
@@ -455,31 +487,7 @@ class RealLegCommandAdapter:
         return best_crank
 
     def crank_angle_to_rocker_angle(self, crank_angle_deg):
-        cfg = self.fourbar
-
-        k1 = cfg.ground_mm / cfg.crank_mm
-        k2 = -cfg.ground_mm / cfg.rocker_mm
-        k3 = (
-            cfg.crank_mm**2
-            - cfg.coupler_mm**2
-            + cfg.rocker_mm**2
-            + cfg.ground_mm**2
-        ) / (2.0 * cfg.crank_mm * cfg.rocker_mm)
-
-        crank_angle = math.radians(crank_angle_deg)
-        ca = math.cos(crank_angle)
-        sa = math.sin(crank_angle)
-
-        a = ca - k1
-        b = sa
-        c = -(k2 * ca + k3)
-
-        disc = a * a + b * b - c * c
-        if disc < 0.0:
-            return None
-
-        rocker_raw = 2.0 * math.atan2(-b + math.sqrt(disc), c - a)
-        return wrap_deg_360(math.degrees(rocker_raw))
+        return self.fourbar.crank_angle_to_rocker_angle(crank_angle_deg)
 
     # Backward-compatible aliases for older debug snippets.
     def inverse_fourbar_alpha(self, beta_des_deg):

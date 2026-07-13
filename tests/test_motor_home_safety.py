@@ -66,6 +66,19 @@ class FakeSDK:
 
 
 class MotorHomeSafetyTests(unittest.TestCase):
+    def test_calf_home_angle_is_derived_from_fourbar_geometry(self):
+        adapter = bridge.RealLegCommandAdapter()
+        self.assertAlmostEqual(
+            adapter.fourbar.knee_pitch_home_deg,
+            adapter.calf_motor_to_knee_pitch(0.0),
+            places=12,
+        )
+        self.assertAlmostEqual(
+            bridge.EXPECTED_CALIBRATION_METADATA["calf_motor"]["common_deg"],
+            adapter.fourbar.knee_pitch_home_deg,
+            places=12,
+        )
+
     def test_calibration_rejects_timeouts_and_garbage_q(self):
         replies = [(False, False, 2, 0, 7.3e24)] * 5
         with self.assertRaisesRegex(RuntimeError, "valid replies 0/5"):

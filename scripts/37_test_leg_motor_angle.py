@@ -8,15 +8,26 @@ import time
 from pathlib import Path
 
 
+SRC_DIR = Path(__file__).resolve().parents[1] / "src"
+if str(SRC_DIR) not in sys.path:
+    sys.path.insert(0, str(SRC_DIR))
+
+from real_leg_adapter import RealLegCommandAdapter
+
+
 HOME_FILE = os.path.expanduser("~/motor_home.json")
 MAX_ABS_Q_HOME_RAD = 10000.0
 
 # 与 33/32 一致：q_home 不是笼统的机械零位，而是在固定标定姿态记录的
 # 编码器参考。单电机脚本也必须拒绝旧格式或错误姿态的 home 文件。
-EXPECTED_CALIBRATION_REFERENCE = {
+_CALIBRATION_MODEL = RealLegCommandAdapter()
+EXPECTED_CALIBRATION_METADATA = {
     "hip_motor": {"common_deg": 0.0},
     "thigh_motor": {"common_deg": 90.0},
-    "calf_motor": {"common_deg": -160.59, "crank_deg": 10.0},
+    "calf_motor": {
+        "common_deg": _CALIBRATION_MODEL.fourbar.knee_pitch_home_deg,
+        "crank_deg": _CALIBRATION_MODEL.fourbar.crank_home_deg,
+    },
 }
 
 DEFAULT_MOTORS = {
@@ -116,22 +127,21 @@ def find_home_entry(home, motor_name, cfg):
     )
 
 
-def validate_calibration_reference(entry, motor_name):
-    """拒绝不带固定标定姿态元数据的旧 q_home 文件。"""
+def validate_calibration_metadata(entry, motor_name):
+    """校验文件声明；不能验证人工摆放的真实机械姿态。"""
     ref = entry.get("calibration_reference")
     if not isinstance(ref, dict):
         raise ValueError(
-            f"{motor_name} home has no calibration_reference. "
-            "Re-run scripts/33_calibrate_motor_home.py at the fixed calibration pose."
+            f"{motor_name} home has no calibration_reference metadata. "
+            "Re-run scripts/33_calibrate_motor_home.py after manually confirming the pose."
         )
 
-    for key, expected in EXPECTED_CALIBRATION_REFERENCE[motor_name].items():
+    for key, expected in EXPECTED_CALIBRATION_METADATA[motor_name].items():
         actual = ref.get(key)
         if actual is None or abs(float(actual) - expected) > 1e-6:
             raise ValueError(
-                f"{motor_name} home calibration_reference[{key!r}]={actual!r}, "
-                f"expected {expected}. Re-run scripts/33_calibrate_motor_home.py "
-                "at the fixed calibration pose."
+                f"{motor_name} calibration metadata[{key!r}]={actual!r}, "
+                f"expected {expected}. The file metadata does not match current code."
             )
 
 
@@ -328,7 +338,7 @@ def main():
     home = load_home(args.home_file)
     entry = find_home_entry(home, args.motor, cfg)
     try:
-        validate_calibration_reference(entry, args.motor)
+        validate_calibration_metadata(entry, args.motor)
         validate_home_numeric(entry, args.motor)
     except ValueError as exc:
         print(f"Refusing to move {args.motor}: {exc}")

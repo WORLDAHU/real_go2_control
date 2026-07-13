@@ -9,6 +9,13 @@ from datetime import datetime
 from pathlib import Path
 
 
+SRC_DIR = Path(__file__).resolve().parents[1] / "src"
+if str(SRC_DIR) not in sys.path:
+    sys.path.insert(0, str(SRC_DIR))
+
+from real_leg_adapter import RealLegCommandAdapter
+
+
 DEFAULT_MOTORS = {
     "hip_motor": {
         "label": "hip",
@@ -78,7 +85,7 @@ MIN_VALID_REPLY_RATIO = 0.80
 #
 #   calf_motor：小腿完全收缩的四连杆限位
 #       crank_angle         = +10.00 deg
-#       common knee_pitch   = -160.59 deg
+#       common knee_pitch   = 由当前四连杆几何和曲柄 10 deg 自动计算
 #       bridge calf_motor   =   0.00 deg
 #       knee_pitch=0 是理论机械参考，当前机构/安全行程无法达到；这不影响
 #       标定。小腿仍须通过四连杆映射，不能直接做线性角度相减。
@@ -86,6 +93,8 @@ MIN_VALID_REPLY_RATIO = 0.80
 # 本脚本只记录上述固定姿态下的 q_home；它不改变 common_joint_deg 的定义，
 # 也不重新拟合四连杆参数。
 # ============================================================================
+_CALIBRATION_MODEL = RealLegCommandAdapter()
+_CALF_HOME_DEG = _CALIBRATION_MODEL.fourbar.knee_pitch_home_deg
 CALIBRATION_COMMON_REFERENCE = {
     "hip_motor": {
         "joint_name": "hip_abduction",
@@ -99,9 +108,11 @@ CALIBRATION_COMMON_REFERENCE = {
     },
     "calf_motor": {
         "joint_name": "knee_pitch",
-        "common_deg": -160.59,
-        "crank_deg": 10.0,
-        "description": "小腿完全收缩限位；对应四连杆曲柄 10 度。",
+        "common_deg": _CALF_HOME_DEG,
+        "crank_deg": _CALIBRATION_MODEL.fourbar.crank_home_deg,
+        "description": (
+            f"小腿完全收缩限位；曲柄 10 度，当前几何正解 knee={_CALF_HOME_DEG:.6f} 度。"
+        ),
     },
 }
 
@@ -217,8 +228,14 @@ def main():
     print("  2. Put the leg at the fixed calibration pose by hand:")
     print("     hip   : no abduction/adduction -> common hip_abduction =   0.00 deg")
     print("     thigh : horizontal              -> common thigh_pitch   = +90.00 deg")
-    print("     calf  : fully folded hard stop  -> knee_pitch = -160.59 deg")
-    print("                                      and crank angle = +10.00 deg")
+    print(
+        "     calf  : fully folded hard stop  -> "
+        f"knee_pitch = {_CALF_HOME_DEG:+.6f} deg"
+    )
+    print(
+        "                                      and crank angle = "
+        f"{_CALIBRATION_MODEL.fourbar.crank_home_deg:+.2f} deg"
+    )
     print("     bridge command 0 deg will return to this pose; it is not")
     print("     automatically the common mechanical joint zero.")
     print("  3. Make sure no bridge with --enable-motors is running.")
@@ -261,8 +278,8 @@ def main():
             "gear": gear,
             "motor_type": "GO_M8010_6",
             "calibrated_at": datetime.now().isoformat(timespec="seconds"),
-            # 保存 q_home 对应的固定机械姿态，便于审计并防止把 q_home
-            # 误解为“所有关节的机械零位”。bridge 的底层控制只使用 q_home；
+            # 保存操作者确认的姿态声明，便于审计并防止把 q_home 误解为
+            # “所有关节的机械零位”。这不是传感器测得的绝对机械姿态；
             # common -> bridge 的偏置由 real_leg_adapter.py 负责。
             "calibration_reference": CALIBRATION_COMMON_REFERENCE[name],
         }

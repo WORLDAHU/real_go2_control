@@ -148,7 +148,16 @@ def main():
 
     print("\nknee_pitch -> rocker_target -> crank_angle -> calf_motor_cmd -> knee_back")
     print("     knee   rocker    crank motor_cmd  clamped knee_back      err")
-    for knee in [-160.59, -156.0, -140.0, -120.0, -100.0, -90.0, -70.0, -48.0]:
+    for knee in [
+        cfg.knee_pitch_home_deg,
+        -156.0,
+        -140.0,
+        -120.0,
+        -100.0,
+        -90.0,
+        -70.0,
+        -48.0,
+    ]:
         rocker_target = adapter.knee_pitch_to_rocker_angle(knee)
         crank = adapter.inverse_fourbar_crank_angle(rocker_target)
         motor_cmd = adapter.crank_angle_to_calf_motor(crank)

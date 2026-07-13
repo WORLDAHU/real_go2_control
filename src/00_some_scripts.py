@@ -45,7 +45,7 @@ GO2 左后腿实机常用命令
 
     calf_motor：小腿完全收缩的四连杆限位
         crank_angle         = +10.00 deg
-        common knee_pitch   = -160.59 deg
+        common knee_pitch   = 四连杆几何自动计算（当前约 -160.623 deg）
         bridge calf_motor   =   0.00 deg
 
 大腿最容易混淆：大腿水平是上电标定姿态，不是 common thigh 的机械零位。
@@ -56,7 +56,8 @@ GO2 左后腿实机常用命令
 大腿当前 bridge 安全范围为 [-120, 0] deg。
 
 小腿不能线性做 knee 偏置，必须通过 real_leg_adapter.py 中的四连杆反解；
-calf bridge=0 已经对应 crank=10 deg、knee 约 -160.59 deg。
+calf bridge=0 已经对应 crank=10 deg；knee 由四连杆正解自动计算，当前约
+-160.623 deg。
 
 
 ============================================================================

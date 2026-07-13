@@ -48,6 +48,6 @@
 
 - `hip_motor = 0°`：`common hip_abduction = 0°`，髋无内外摆动。
 - `thigh_motor = 0°`：`common thigh_pitch = +90°`，大腿水平。
-- `calf_motor = 0°`：曲柄为 `10°`，`common knee_pitch ≈ -160.59°`，小腿完全收缩。
+- `calf_motor = 0°`：曲柄为 `10°`，`common knee_pitch` 由当前四连杆几何自动计算（当前约 `-160.623°`），小腿完全收缩。
 
 更完整的命令和操作说明见 `src/00_some_scripts.py`。

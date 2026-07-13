@@ -61,12 +61,16 @@ HOME_RAMP_TIME = 3.0
 HOME_FILE = os.path.expanduser("~/motor_home.json")
 MAX_ABS_Q_HOME_RAD = 10000.0
 
-# q_home 必须在这套固定标定姿态下记录。它用于防止旧的“所有关节机械零位”
-# 标定文件被误用于新的大腿水平标定约定。
-EXPECTED_CALIBRATION_REFERENCE = {
+# 这里只能校验文件声明的元数据，不能从非绝对编码器判断人工摆放的真实姿态。
+# 小腿 common 角由当前四连杆几何和曲柄标定角自动计算，不再重复写死。
+_CALIBRATION_MODEL = RealLegCommandAdapter()
+EXPECTED_CALIBRATION_METADATA = {
     "hip_motor": {"common_deg": 0.0},
     "thigh_motor": {"common_deg": 90.0},
-    "calf_motor": {"common_deg": -160.59, "crank_deg": 10.0},
+    "calf_motor": {
+        "common_deg": _CALIBRATION_MODEL.fourbar.knee_pitch_home_deg,
+        "crank_deg": _CALIBRATION_MODEL.fourbar.crank_home_deg,
+    },
 }
 
 
@@ -99,28 +103,27 @@ def rotor_to_joint(rotor_rad, q_home, gear):
     return math.degrees((rotor_rad - q_home) / gear)
 
 
-def validate_calibration_reference(entry, motor_name):
+def validate_calibration_metadata(entry, motor_name):
     """
-    确认 q_home 的物理含义与当前代码一致。
+    检查文件声明的标定元数据是否与当前代码约定一致。
 
-    q_home 本身只是编码器数值，无法单独看出标定时腿摆在哪里。33 脚本会
-    把该姿态的 common 角写进 calibration_reference；这里强制检查它，避免
-    把按旧约定保存的 q_home 当成“大腿水平标定”的 q_home 使用。
+    这不能验证标定时腿是否真的摆在对应机械姿态；该事实只能由操作者或额外
+    的绝对传感器确认。这里仅防止旧格式、不同几何参数或不同标定约定的文件
+    被当前代码误用。
     """
     ref = entry.get("calibration_reference")
     if not isinstance(ref, dict):
         raise ValueError(
-            f"{motor_name} home has no calibration_reference. "
-            "Re-run scripts/33_calibrate_motor_home.py at the fixed calibration pose."
+            f"{motor_name} home has no calibration_reference metadata. "
+            "Re-run scripts/33_calibrate_motor_home.py after manually confirming the pose."
         )
 
-    for key, expected in EXPECTED_CALIBRATION_REFERENCE[motor_name].items():
+    for key, expected in EXPECTED_CALIBRATION_METADATA[motor_name].items():
         actual = ref.get(key)
         if actual is None or abs(float(actual) - expected) > 1e-6:
             raise ValueError(
-                f"{motor_name} home calibration_reference[{key!r}]={actual!r}, "
-                f"expected {expected}. Re-run scripts/33_calibrate_motor_home.py "
-                "at the fixed calibration pose."
+                f"{motor_name} calibration metadata[{key!r}]={actual!r}, "
+                f"expected {expected}. The file metadata does not match current code."
             )
 
 
@@ -264,7 +267,7 @@ class RealUnitreeLegBridge:
         # bridge 坐标：
         #   hip=0   -> common hip=0
         #   thigh=0 -> common thigh=+90（大腿水平标定姿态）
-        #   calf=0  -> common knee≈-160.59（小腿收缩限位）
+        #   calf=0  -> common knee 由当前四连杆几何自动计算（小腿收缩限位）
         self.angle_adapter = RealLegCommandAdapter()
 
         self.target_deg = {name: 0.0 for name in MOTOR_NAMES}
@@ -316,7 +319,7 @@ class RealUnitreeLegBridge:
                 cfg = self.motors_cfg[name]
                 rt = MotorRuntime(cfg, self.sdk)
                 entry = self.find_home_entry(home, name, cfg)
-                validate_calibration_reference(entry, name)
+                validate_calibration_metadata(entry, name)
                 validate_home_numeric(entry, name, self.gear)
                 rt.q_home = float(entry["q_home"])
                 self.runtime[name] = rt
@@ -331,8 +334,9 @@ class RealUnitreeLegBridge:
                     f"({reference.get('description', '')})"
                 )
         except (KeyError, ValueError) as exc:
-            print(f"[startup] 标定文件与当前固定标定姿态约定不匹配：{exc}")
-            print("[startup] 请重新运行 scripts/33_calibrate_motor_home.py 后再启动 bridge。")
+            print(f"[startup] 标定文件元数据或数值无效：{exc}")
+            print("[startup] 此检查不能验证人工摆放的真实机械姿态。")
+            print("[startup] 请确认固定姿态后重新运行 scripts/33_calibrate_motor_home.py。")
             raise RuntimeError("invalid motor home calibration") from exc
 
         print("reading current motor positions...")
