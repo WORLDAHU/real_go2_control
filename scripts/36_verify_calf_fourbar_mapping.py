@@ -22,10 +22,10 @@
 
 1. calf_motor_cmd_deg
    发给实机 bridge 的小腿电机命令角。
-   它是相对真实小腿电机零位的角度。
+   它是相对本次上电固定标定姿态的角度。
 
    当前约定：
-     0 deg    表示真实电机零位。
+     0 deg    表示本次 q_home 对应的固定标定姿态。
      负角度   表示实机小腿可动方向。
      正角度   当前不允许用于实机动作。
 
@@ -156,7 +156,8 @@ def main():
             cfg.calf_motor_cmd_min_deg,
             min(cfg.calf_motor_cmd_max_deg, motor_cmd),
         )
-        knee_back = adapter.calf_motor_to_knee_pitch(motor_cmd)
+        # 验证真正能发给 bridge 的限幅后命令，而不是理论上的超限命令。
+        knee_back = adapter.calf_motor_to_knee_pitch(motor_cmd_clamped)
         err = angle_error_deg(knee_back, knee)
         print(
             f"{knee:9.2f} {fmt(rocker_target)} {fmt(crank)}"

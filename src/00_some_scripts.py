@@ -148,7 +148,7 @@ calf bridge=0 已经对应 crank=10 deg、knee 约 -160.59 deg。
 
     /home/claww/miniforge3/envs/go2-convex-mpc/bin/python \
       scripts/37_test_leg_motor_angle.py \
-      --motor calf_motor --angle-deg 0 --kp 0.25 --kd 0.03 --hold-sec 2
+      --motor calf_motor --angle-deg -20 --kp 0.25 --kd 0.03 --hold-sec 2
 
 
 ============================================================================
