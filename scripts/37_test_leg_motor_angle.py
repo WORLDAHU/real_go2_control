@@ -9,6 +9,7 @@ from pathlib import Path
 
 
 HOME_FILE = os.path.expanduser("~/motor_home.json")
+MAX_ABS_Q_HOME_RAD = 10000.0
 
 # 与 33/32 一致：q_home 不是笼统的机械零位，而是在固定标定姿态记录的
 # 编码器参考。单电机脚本也必须拒绝旧格式或错误姿态的 home 文件。
@@ -132,6 +133,17 @@ def validate_calibration_reference(entry, motor_name):
                 f"expected {expected}. Re-run scripts/33_calibrate_motor_home.py "
                 "at the fixed calibration pose."
             )
+
+
+def validate_home_numeric(entry, motor_name):
+    """拒绝超时或坏帧留下的垃圾 q_home/gear。"""
+    q_home = float(entry.get("q_home", float("nan")))
+    if not math.isfinite(q_home) or abs(q_home) > MAX_ABS_Q_HOME_RAD:
+        raise ValueError(f"{motor_name} invalid q_home={q_home!r}")
+
+    gear = float(entry.get("gear", float("nan")))
+    if not math.isfinite(gear) or gear <= 0.0:
+        raise ValueError(f"{motor_name} invalid gear={gear!r}")
 
 
 def check_angle_limit(angle_deg, min_deg, max_deg):
@@ -317,6 +329,7 @@ def main():
     entry = find_home_entry(home, args.motor, cfg)
     try:
         validate_calibration_reference(entry, args.motor)
+        validate_home_numeric(entry, args.motor)
     except ValueError as exc:
         print(f"Refusing to move {args.motor}: {exc}")
         return 1

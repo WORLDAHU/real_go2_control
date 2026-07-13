@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 import argparse
 import json
+import math
 import os
 import sys
 import time
@@ -30,6 +31,9 @@ DEFAULT_MOTORS = {
 }
 
 HOME_FILE = os.path.expanduser("~/motor_home.json")
+MAX_ABS_ROTOR_RAD = 10000.0
+MAX_SAMPLE_SPREAD_RAD = 0.10
+MIN_VALID_REPLY_RATIO = 0.80
 
 
 # ============================================================================
@@ -129,14 +133,48 @@ def read_current_rotor(sdk, port, motor_id, samples, dt):
     cmd.tau = 0.0
 
     vals = []
+    reject_reasons = []
+    last_valid_data = None
     for _ in range(samples):
         data.motorType = sdk.MotorType.GO_M8010_6
         cmd.motorType = sdk.MotorType.GO_M8010_6
-        serial.sendRecv(cmd, data)
-        vals.append(float(data.q))
+        ok = bool(serial.sendRecv(cmd, data))
+        q = float(data.q)
+        reason = None
+        if not ok:
+            reason = "sendRecv returned false (timeout/no reply)"
+        elif not bool(data.correct):
+            reason = "SDK marked reply incorrect (CRC/frame error)"
+        elif int(data.motor_id) != int(motor_id):
+            reason = f"reply motor id={int(data.motor_id)}, expected {int(motor_id)}"
+        elif int(data.merror) != 0:
+            reason = f"motor error={int(data.merror)}"
+        elif not math.isfinite(q) or abs(q) > MAX_ABS_ROTOR_RAD:
+            reason = f"invalid rotor q={q!r} rad"
+
+        if reason is None:
+            vals.append(q)
+            last_valid_data = data
+        else:
+            reject_reasons.append(reason)
         time.sleep(dt)
 
-    return sum(vals) / len(vals), data
+    required = max(3, math.ceil(samples * MIN_VALID_REPLY_RATIO))
+    if len(vals) < required:
+        detail = reject_reasons[-1] if reject_reasons else "no valid samples"
+        raise RuntimeError(
+            f"motor id={motor_id} communication invalid: "
+            f"valid replies {len(vals)}/{samples}, required {required}; {detail}"
+        )
+
+    spread = max(vals) - min(vals)
+    if spread > MAX_SAMPLE_SPREAD_RAD:
+        raise RuntimeError(
+            f"motor id={motor_id} rotor readings unstable: "
+            f"spread={spread:.6f} rad > {MAX_SAMPLE_SPREAD_RAD:.6f} rad"
+        )
+
+    return sum(vals) / len(vals), last_valid_data, len(vals), spread
 
 
 def build_arg_parser():
@@ -203,13 +241,18 @@ def main():
             f"reading {name}: port={cfg['port']} "
             f"id={cfg['id']} dir={cfg['direction']:+.0f}"
         )
-        q_home, data = read_current_rotor(
-            sdk=sdk,
-            port=cfg["port"],
-            motor_id=cfg["id"],
-            samples=args.samples,
-            dt=args.dt,
-        )
+        try:
+            q_home, data, valid_count, spread = read_current_rotor(
+                sdk=sdk,
+                port=cfg["port"],
+                motor_id=cfg["id"],
+                samples=args.samples,
+                dt=args.dt,
+            )
+        except Exception as exc:
+            print(f"  FAILED: {exc}")
+            print("Calibration aborted. Existing home file was not changed.")
+            return 1
         home[name] = {
             "port": cfg["port"],
             "id": int(cfg["id"]),
@@ -223,7 +266,10 @@ def main():
             # common -> bridge 的偏置由 real_leg_adapter.py 负责。
             "calibration_reference": CALIBRATION_COMMON_REFERENCE[name],
         }
-        print(f"  q_home={q_home:.6f} rad, merror={getattr(data, 'merror', 'unknown')}")
+        print(
+            f"  q_home={q_home:.6f} rad, valid={valid_count}/{args.samples}, "
+            f"spread={spread:.6f} rad, merror={getattr(data, 'merror', 'unknown')}"
+        )
 
     home_path = Path(args.home_file).expanduser()
     home_path.parent.mkdir(parents=True, exist_ok=True)

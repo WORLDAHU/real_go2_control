@@ -58,6 +58,7 @@ RAMP_TIME = 0.05
 # 标定姿态。启动归位使用独立、较慢的时间，避免大角度命令产生很高的 dq_ff。
 HOME_RAMP_TIME = 3.0
 HOME_FILE = os.path.expanduser("~/motor_home.json")
+MAX_ABS_Q_HOME_RAD = 10000.0
 
 # q_home 必须在这套固定标定姿态下记录。它用于防止旧的“所有关节机械零位”
 # 标定文件被误用于新的大腿水平标定约定。
@@ -115,6 +116,22 @@ def validate_calibration_reference(entry, motor_name):
                 f"expected {expected}. Re-run scripts/33_calibrate_motor_home.py "
                 "at the fixed calibration pose."
             )
+
+
+def validate_home_numeric(entry, motor_name, expected_gear):
+    """拒绝超时/坏帧产生的垃圾 q_home 和不匹配的减速比。"""
+    q_home = float(entry.get("q_home", float("nan")))
+    if not math.isfinite(q_home) or abs(q_home) > MAX_ABS_Q_HOME_RAD:
+        raise ValueError(f"{motor_name} invalid q_home={q_home!r}")
+
+    stored_gear = float(entry.get("gear", float("nan")))
+    if not math.isfinite(stored_gear) or stored_gear <= 0.0:
+        raise ValueError(f"{motor_name} invalid gear={stored_gear!r}")
+    if abs(stored_gear - float(expected_gear)) > 1e-3:
+        raise ValueError(
+            f"{motor_name} home gear={stored_gear:.6f}, "
+            f"current SDK gear={float(expected_gear):.6f}"
+        )
 
 
 class MotorRuntime:
@@ -274,6 +291,7 @@ class RealUnitreeLegBridge:
                 rt = MotorRuntime(cfg, self.sdk)
                 entry = self.find_home_entry(home, name, cfg)
                 validate_calibration_reference(entry, name)
+                validate_home_numeric(entry, name, self.gear)
                 rt.q_home = float(entry["q_home"])
                 self.runtime[name] = rt
                 reference = entry["calibration_reference"]
