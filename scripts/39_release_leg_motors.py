@@ -11,6 +11,13 @@ DEFAULT_MOTORS = {
     "thigh_motor": {"label": "thigh", "port": "/dev/ttyUSB1", "id": 0},
     "calf_motor": {"label": "calf", "port": "/dev/ttyUSB0", "id": 1},
 }
+TWO_PI = 2.0 * math.pi
+
+
+def unwrap_near(angle_rad, reference_rad):
+    return float(angle_rad) + round(
+        (float(reference_rad) - float(angle_rad)) / TWO_PI
+    ) * TWO_PI
 
 
 def import_sdk(sdk_path):
@@ -99,7 +106,8 @@ def read_current_q(sdk, serial, cmd, data, motor_id, samples, dt):
             kd=0.0,
             tau=0.0,
         )
-        vals.append(float(data.q))
+        raw_q = float(data.q)
+        vals.append(raw_q if not vals else unwrap_near(raw_q, vals[-1]))
         time.sleep(dt)
     spread = max(vals) - min(vals)
     if spread > 0.10:

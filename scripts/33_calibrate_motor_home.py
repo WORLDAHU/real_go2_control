@@ -39,6 +39,7 @@ DEFAULT_MOTORS = {
 
 HOME_FILE = os.path.expanduser("~/motor_home.json")
 MAX_ABS_ROTOR_RAD = 10000.0
+TWO_PI = 2.0 * math.pi
 MAX_SAMPLE_SPREAD_RAD = 0.10
 MIN_VALID_REPLY_RATIO = 0.80
 
@@ -126,6 +127,12 @@ def import_sdk(sdk_path):
     return sdk
 
 
+def unwrap_near(angle_rad, reference_rad):
+    return float(angle_rad) + round(
+        (float(reference_rad) - float(angle_rad)) / TWO_PI
+    ) * TWO_PI
+
+
 def read_current_rotor(sdk, port, motor_id, samples, dt):
     serial = sdk.SerialPort(port)
     cmd = sdk.MotorCmd()
@@ -164,7 +171,7 @@ def read_current_rotor(sdk, port, motor_id, samples, dt):
             reason = f"invalid rotor q={q!r} rad"
 
         if reason is None:
-            vals.append(q)
+            vals.append(q if not vals else unwrap_near(q, vals[-1]))
             last_valid_data = data
         else:
             reject_reasons.append(reason)

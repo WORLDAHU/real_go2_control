@@ -122,6 +122,33 @@ class MotorHomeSafetyTests(unittest.TestCase):
         self.assertEqual(accepted["thigh_motor"], -20.0)
         self.assertEqual(controller.last_accepted_ramp_time, 2.0)
 
+    def test_home_reference_is_aligned_across_one_rotor_turn(self):
+        stored_home = -10.593168
+        true_joint_deg = 0.25
+        raw_now = (
+            stored_home
+            + 2.0 * bridge.math.pi
+            + bridge.math.radians(true_joint_deg) * 6.33
+        )
+        aligned_home = bridge.unwrap_near(stored_home, raw_now)
+        recovered = bridge.rotor_to_joint(raw_now, aligned_home, 6.33)
+        self.assertAlmostEqual(recovered, true_joint_deg, places=9)
+
+    def test_calibration_unwraps_samples_across_plus_minus_pi(self):
+        replies = [
+            (True, True, 2, 0, 3.13),
+            (True, True, 2, 0, -3.14),
+            (True, True, 2, 0, -3.13),
+            (True, True, 2, 0, -3.12),
+            (True, True, 2, 0, -3.11),
+        ]
+        q_home, _data, valid, spread = calibrate.read_current_rotor(
+            FakeSDK(replies), "/dev/null", 2, 5, 0.0
+        )
+        self.assertEqual(valid, 5)
+        self.assertLess(spread, 0.05)
+        self.assertGreater(q_home, 3.13)
+
     def test_bridge_runtime_rejects_timeout_bad_frame_wrong_id_and_fault(self):
         runtime = object.__new__(bridge.MotorRuntime)
         runtime.cfg = {"label": "hip", "id": 2}

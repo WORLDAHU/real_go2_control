@@ -60,9 +60,11 @@ MAX_COMMAND_SPEED_DEG_S = 20.0
 HOME_RAMP_TIME = 3.0
 HOME_FILE = os.path.expanduser("~/motor_home.json")
 MAX_ABS_Q_HOME_RAD = 10000.0
+TWO_PI = 2.0 * math.pi
 HOMING_TOLERANCE_DEG = 2.0
 HOMING_STABLE_CYCLES = 10
 HOMING_TIMEOUT_MARGIN_SEC = 3.0
+STARTUP_NEAR_HOME_LIMIT_DEG = 15.0
 STOP_REPEAT_COUNT = 20
 
 STATE_INITIALIZING = "initializing"
@@ -115,6 +117,13 @@ def rotor_to_joint(rotor_rad, q_home, gear):
     return math.degrees((rotor_rad - q_home) / gear)
 
 
+def unwrap_near(angle_rad, reference_rad):
+    """Return the 2π-equivalent angle nearest to a continuous reference."""
+    return float(angle_rad) + round(
+        (float(reference_rad) - float(angle_rad)) / TWO_PI
+    ) * TWO_PI
+
+
 def validate_calibration_metadata(entry, motor_name):
     """
     检查文件声明的标定元数据是否与当前代码约定一致。
@@ -163,6 +172,7 @@ class MotorRuntime:
         self.cmd = sdk.MotorCmd()
         self.data = sdk.MotorData()
         self.q_home = None
+        self.feedback_q = None
         self.position_valid = False
         self.io_lock = threading.Lock()
 
@@ -191,8 +201,12 @@ class MotorRuntime:
             raise RuntimeError(
                 f"{self.cfg['label']} motor fault merror={int(self.data.merror)}"
             )
+        if self.feedback_q is None:
+            self.feedback_q = q
+        else:
+            self.feedback_q = unwrap_near(q, self.feedback_q)
         self.position_valid = True
-        return q
+        return self.feedback_q
 
     def read_current_rotor(self, n=10):
         self.init_cmd()
@@ -441,12 +455,28 @@ class RealUnitreeLegBridge:
             print("[startup] 请确认固定姿态后重新运行 scripts/33_calibrate_motor_home.py。")
             raise RuntimeError("invalid motor home calibration") from exc
 
+        print()
+        print("IMPORTANT: rotor feedback is only identifiable modulo 2*pi after reconnect.")
+        print("Before reading, manually place the leg near the fixed calibration pose:")
+        print("  hip=no abduction, thigh=horizontal, calf=fully folded hard stop")
+        print(
+            f"Each joint must be within about {STARTUP_NEAR_HOME_LIMIT_DEG:.0f} deg "
+            "of that pose; the bridge cannot infer an arbitrary pose without "
+            "an absolute sensor."
+        )
+        reply = input("Type YES after the leg is near the calibration pose: ").strip()
+        if reply != "YES":
+            self.stop_all_immediately(reason="startup pose not confirmed", fault=False)
+            raise RuntimeError("startup cancelled; calibration pose not confirmed")
+
         print("reading and validating current motor positions...")
         try:
             for name in MOTOR_NAMES:
                 cfg = self.motors_cfg[name]
                 rt = self.runtime[name]
                 q_now = rt.read_current_rotor()
+                stored_q_home = rt.q_home
+                rt.q_home = unwrap_near(rt.q_home, q_now)
                 joint_deg = (
                     rotor_to_joint(q_now, rt.q_home, self.gear) * cfg["direction"]
                 )
@@ -455,7 +485,17 @@ class RealUnitreeLegBridge:
                     self.current_deg[name] = joint_deg
                     self.target_deg[name] = joint_deg
 
-                print(f"{name}: validated current={joint_deg:.2f} deg")
+                branch_shift = (rt.q_home - stored_q_home) / TWO_PI
+                print(
+                    f"{name}: validated current={joint_deg:.2f} deg "
+                    f"(home branch shift={branch_shift:+.0f} x 2pi)"
+                )
+                if abs(joint_deg) > STARTUP_NEAR_HOME_LIMIT_DEG:
+                    raise RuntimeError(
+                        f"{name} inferred startup offset={joint_deg:.2f} deg exceeds "
+                        f"{STARTUP_NEAR_HOME_LIMIT_DEG:.2f} deg; return the joint "
+                        "near the fixed calibration pose and recalibrate"
+                    )
         except Exception as exc:
             self.last_error = f"startup position validation failed: {exc}"
             self.stop_all_immediately(reason=self.last_error, fault=True)
@@ -536,7 +576,7 @@ class RealUnitreeLegBridge:
 
                     if abs(target_joint - prev_target.get(name, 999.0)) > 0.01:
                         prev_target[name] = target_joint
-                        ramp_q0[name] = rt.data.q
+                        ramp_q0[name] = rt.feedback_q
                         ramp_t0[name] = now
                         ramp_duration[name] = requested_ramp_time
 
@@ -560,7 +600,7 @@ class RealUnitreeLegBridge:
 
                     rt.send_motor(q_cmd, dq_ff, self.kp, self.kd, 0.0)
 
-                    joint_now = rotor_to_joint(rt.data.q, rt.q_home, self.gear)
+                    joint_now = rotor_to_joint(rt.feedback_q, rt.q_home, self.gear)
                     with self.lock:
                         self.current_deg[name] = joint_now * cfg["direction"]
 
@@ -676,7 +716,7 @@ class RealUnitreeLegBridge:
                         fade = 1.0 - step / fade_steps
                         for rt in self.runtime.values():
                             rt.send_motor(
-                                float(rt.data.q),
+                                float(rt.feedback_q),
                                 0.0,
                                 self.kp * fade,
                                 self.kd * fade,

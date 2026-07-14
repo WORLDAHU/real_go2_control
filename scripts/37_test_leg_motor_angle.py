@@ -17,6 +17,7 @@ from real_leg_adapter import RealLegCommandAdapter
 
 HOME_FILE = os.path.expanduser("~/motor_home.json")
 MAX_ABS_Q_HOME_RAD = 10000.0
+TWO_PI = 2.0 * math.pi
 
 # 与 33/32 一致：q_home 不是笼统的机械零位，而是在固定标定姿态记录的
 # 编码器参考。单电机脚本也必须拒绝旧格式或错误姿态的 home 文件。
@@ -197,6 +198,12 @@ def rotor_to_joint(rotor_rad, q_home, gear):
     return math.degrees((rotor_rad - q_home) / gear)
 
 
+def unwrap_near(angle_rad, reference_rad):
+    return float(angle_rad) + round(
+        (float(reference_rad) - float(angle_rad)) / TWO_PI
+    ) * TWO_PI
+
+
 def read_current_joint(sdk, serial, cmd, data, cfg, q_home, gear, samples=10):
     vals = []
     for _ in range(samples):
@@ -212,10 +219,14 @@ def read_current_joint(sdk, serial, cmd, data, cfg, q_home, gear, samples=10):
             kd=0.01,
             tau=0.0,
         )
-        vals.append(q)
+        vals.append(q if not vals else unwrap_near(q, vals[-1]))
         time.sleep(0.01)
-    joint_deg = rotor_to_joint(sum(vals) / len(vals), q_home, gear) * cfg["direction"]
-    return joint_deg, err
+    q_mean = sum(vals) / len(vals)
+    aligned_q_home = unwrap_near(q_home, q_mean)
+    joint_deg = (
+        rotor_to_joint(q_mean, aligned_q_home, gear) * cfg["direction"]
+    )
+    return joint_deg, err, aligned_q_home
 
 
 def move_to_angle(
@@ -244,6 +255,8 @@ def move_to_angle(
         kd=0.01,
         tau=0.0,
     )
+    q_start = unwrap_near(q_start, q_home)
+    last_q_read = q_start
     target_joint_for_rotor = angle_deg * cfg["direction"]
     q_target = joint_to_rotor(target_joint_for_rotor, q_home, gear)
 
@@ -265,6 +278,8 @@ def move_to_angle(
             kd=kd,
             tau=0.0,
         )
+        q_read = unwrap_near(q_read, q_cmd)
+        last_q_read = q_read
         now_deg = rotor_to_joint(q_read, q_home, gear) * cfg["direction"]
         pos_err = angle_deg - now_deg
         print(
@@ -290,6 +305,8 @@ def move_to_angle(
             kd=kd,
             tau=0.0,
         )
+        q_read = unwrap_near(q_read, q_target)
+        last_q_read = q_read
         now_deg = rotor_to_joint(q_read, q_home, gear) * cfg["direction"]
         pos_err = angle_deg - now_deg
         print(
@@ -297,9 +314,10 @@ def move_to_angle(
             f"pos_err={pos_err:+.2f} deg, err={err}"
         )
         time.sleep(0.05)
+    return last_q_read
 
 
-def soft_release(sdk, serial, cmd, data, motor_id, kp, kd):
+def soft_release(sdk, serial, cmd, data, motor_id, q_hold, kp, kd):
     print("soft release...")
     for i in range(80):
         fade = 1.0 - i / 80.0
@@ -309,7 +327,7 @@ def soft_release(sdk, serial, cmd, data, motor_id, kp, kd):
             cmd,
             data,
             motor_id,
-            q=data.q,
+            q=q_hold,
             dq=0.0,
             kp=kp * fade,
             kd=kd * fade,
@@ -410,16 +428,20 @@ def main():
     motion_confirmed = False
     had_fault = False
     result_code = 0
+    release_q = None
     try:
         print(
             "注意：下面的当前位置读取会发送零刚度 FOC 查询帧；"
             "确认没有 bridge 或其他串口程序运行。"
         )
-        current_deg, err = read_current_joint(
+        current_deg, err, q_home = read_current_joint(
             sdk, serial, cmd, data, cfg, q_home, gear
         )
         position_valid = True
-        print(f"current={current_deg:+.2f} deg, err={err}")
+        print(
+            f"current={current_deg:+.2f} deg, err={err}, "
+            f"aligned_q_home={q_home:.6f} rad"
+        )
         print()
 
         reply = input("Type YES to move this motor: ").strip().upper()
@@ -427,7 +449,7 @@ def main():
             print("Cancelled; sending mode=0 stop frames.")
         else:
             motion_confirmed = True
-            move_to_angle(
+            release_q = move_to_angle(
                 sdk=sdk,
                 serial=serial,
                 cmd=cmd,
@@ -447,10 +469,10 @@ def main():
         print(f"FAULT: {exc}")
     finally:
         cleanup_ok = False
-        if position_valid and motion_confirmed and not had_fault:
+        if position_valid and motion_confirmed and not had_fault and release_q is not None:
             try:
                 cleanup_ok = soft_release(
-                    sdk, serial, cmd, data, cfg["id"], args.kp, args.kd
+                    sdk, serial, cmd, data, cfg["id"], release_q, args.kp, args.kd
                 )
             except Exception as exc:
                 print(f"soft release failed: {exc}; switching to mode=0 only")
