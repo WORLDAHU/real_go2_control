@@ -60,6 +60,18 @@ MAX_COMMAND_SPEED_DEG_S = 20.0
 HOME_RAMP_TIME = 3.0
 HOME_FILE = os.path.expanduser("~/motor_home.json")
 MAX_ABS_Q_HOME_RAD = 10000.0
+HOMING_TOLERANCE_DEG = 2.0
+HOMING_STABLE_CYCLES = 10
+HOMING_TIMEOUT_MARGIN_SEC = 3.0
+STOP_REPEAT_COUNT = 20
+
+STATE_INITIALIZING = "initializing"
+STATE_HOMING = "homing"
+STATE_READY = "ready"
+STATE_STOPPING = "stopping"
+STATE_STOPPED = "stopped"
+STATE_FAULT = "fault"
+STATE_DRY_RUN = "dry_run"
 
 # 这里只能校验文件声明的元数据，不能从非绝对编码器判断人工摆放的真实姿态。
 # 小腿 common 角由当前四连杆几何和曲柄标定角自动计算，不再重复写死。
@@ -151,6 +163,8 @@ class MotorRuntime:
         self.cmd = sdk.MotorCmd()
         self.data = sdk.MotorData()
         self.q_home = None
+        self.position_valid = False
+        self.io_lock = threading.Lock()
 
     def init_cmd(self):
         self.cmd.motorType = self.sdk.MotorType.GO_M8010_6
@@ -159,6 +173,26 @@ class MotorRuntime:
             self.sdk.MotorMode.FOC,
         )
         self.cmd.id = self.cfg["id"]
+
+    def validate_reply(self, ok, allow_motor_fault=False):
+        if not bool(ok):
+            raise RuntimeError(f"{self.cfg['label']} sendRecv timeout/no reply")
+        if not bool(self.data.correct):
+            raise RuntimeError(f"{self.cfg['label']} invalid CRC/frame")
+        if int(self.data.motor_id) != int(self.cfg["id"]):
+            raise RuntimeError(
+                f"{self.cfg['label']} reply id={int(self.data.motor_id)}, "
+                f"expected {int(self.cfg['id'])}"
+            )
+        q = float(self.data.q)
+        if not math.isfinite(q) or abs(q) > MAX_ABS_Q_HOME_RAD:
+            raise RuntimeError(f"{self.cfg['label']} returned invalid q={q!r}")
+        if not allow_motor_fault and int(self.data.merror) != 0:
+            raise RuntimeError(
+                f"{self.cfg['label']} motor fault merror={int(self.data.merror)}"
+            )
+        self.position_valid = True
+        return q
 
     def read_current_rotor(self, n=10):
         self.init_cmd()
@@ -170,66 +204,67 @@ class MotorRuntime:
 
         vals = []
         for _ in range(n):
-            self.data.motorType = self.sdk.MotorType.GO_M8010_6
-            self.cmd.motorType = self.sdk.MotorType.GO_M8010_6
-            self.serial.sendRecv(self.cmd, self.data)
-            vals.append(self.data.q)
+            with self.io_lock:
+                self.data.motorType = self.sdk.MotorType.GO_M8010_6
+                self.cmd.motorType = self.sdk.MotorType.GO_M8010_6
+                ok = self.serial.sendRecv(self.cmd, self.data)
+                vals.append(self.validate_reply(ok))
             time.sleep(0.01)
 
+        spread = max(vals) - min(vals)
+        if spread > 0.10:
+            raise RuntimeError(
+                f"{self.cfg['label']} rotor readings unstable: "
+                f"spread={spread:.6f} rad"
+            )
         return sum(vals) / len(vals)
 
     def send_motor(self, q, dq, kp, kd, tau):
-        self.init_cmd()
-        self.data.motorType = self.sdk.MotorType.GO_M8010_6
-        self.cmd.motorType = self.sdk.MotorType.GO_M8010_6
-        self.cmd.q = q
-        self.cmd.dq = dq
-        self.cmd.kp = kp
-        self.cmd.kd = kd
-        self.cmd.tau = tau
-        ok = bool(self.serial.sendRecv(self.cmd, self.data))
-        if not ok:
-            raise RuntimeError(
-                f"{self.cfg['label']} sendRecv timeout/no reply"
-            )
-        if not bool(self.data.correct):
-            raise RuntimeError(
-                f"{self.cfg['label']} invalid CRC/frame"
-            )
-        if int(self.data.motor_id) != int(self.cfg["id"]):
-            raise RuntimeError(
-                f"{self.cfg['label']} reply id={int(self.data.motor_id)}, "
-                f"expected {int(self.cfg['id'])}"
-            )
-        if not math.isfinite(float(self.data.q)):
-            raise RuntimeError(f"{self.cfg['label']} returned invalid q")
-        if int(self.data.merror) != 0:
-            raise RuntimeError(
-                f"{self.cfg['label']} motor fault merror={int(self.data.merror)}"
-            )
+        with self.io_lock:
+            self.init_cmd()
+            self.data.motorType = self.sdk.MotorType.GO_M8010_6
+            self.cmd.motorType = self.sdk.MotorType.GO_M8010_6
+            self.cmd.q = q
+            self.cmd.dq = dq
+            self.cmd.kp = kp
+            self.cmd.kd = kd
+            self.cmd.tau = tau
+            ok = self.serial.sendRecv(self.cmd, self.data)
+            self.validate_reply(ok)
 
     def send_stop(self):
-        self.init_cmd()
-        stop_mode = getattr(self.sdk.MotorMode, "STOP", None)
-        if stop_mode is not None:
-            try:
-                self.cmd.mode = self.sdk.queryMotorMode(
-                    self.sdk.MotorType.GO_M8010_6,
-                    stop_mode,
-                )
-            except Exception:
+        with self.io_lock:
+            self.init_cmd()
+            stop_mode = getattr(self.sdk.MotorMode, "STOP", None)
+            if stop_mode is not None:
+                try:
+                    self.cmd.mode = self.sdk.queryMotorMode(
+                        self.sdk.MotorType.GO_M8010_6,
+                        stop_mode,
+                    )
+                except Exception:
+                    self.cmd.mode = 0
+            else:
                 self.cmd.mode = 0
-        else:
-            self.cmd.mode = 0
 
-        self.data.motorType = self.sdk.MotorType.GO_M8010_6
-        self.cmd.motorType = self.sdk.MotorType.GO_M8010_6
-        self.cmd.q = 0.0
-        self.cmd.dq = 0.0
-        self.cmd.kp = 0.0
-        self.cmd.kd = 0.0
-        self.cmd.tau = 0.0
-        self.serial.sendRecv(self.cmd, self.data)
+            self.data.motorType = self.sdk.MotorType.GO_M8010_6
+            self.cmd.motorType = self.sdk.MotorType.GO_M8010_6
+            self.cmd.q = 0.0
+            self.cmd.dq = 0.0
+            self.cmd.kp = 0.0
+            self.cmd.kd = 0.0
+            self.cmd.tau = 0.0
+            ok = bool(self.serial.sendRecv(self.cmd, self.data))
+            reply_valid = (
+                ok
+                and bool(self.data.correct)
+                and int(self.data.motor_id) == int(self.cfg["id"])
+            )
+            return {
+                "frame_sent": ok,
+                "reply_valid": reply_valid,
+                "merror": int(self.data.merror) if reply_valid else None,
+            }
 
 
 class RealUnitreeLegBridge:
@@ -254,13 +289,17 @@ class RealUnitreeLegBridge:
         self.home_ramp_time = home_ramp_time
 
         self.lock = threading.Lock()
+        self.stop_lock = threading.Lock()
         self.running = True
         self.stopped = False
         self.stopping = False
         self.motors_ready = False
+        self.state = STATE_INITIALIZING
         self.gear = None
         self.sdk = None
         self.runtime = {}
+        self.control_thread = None
+        self.server_shutdown_callback = None
 
         # 用于 bridge_cmd_deg -> common_joint_deg 的正向换算。
         #
@@ -277,6 +316,60 @@ class RealUnitreeLegBridge:
         self.current_deg = {name: 0.0 for name in MOTOR_NAMES}
         self.last_error = ""
         self.last_accepted_ramp_time = ramp_time
+        self.homing_started_at = None
+        self.homing_duration = None
+        self.homing_stable_cycles = 0
+        self.stop_result = {
+            "stop_requested": False,
+            "soft_release_attempted": False,
+            "soft_release_complete": False,
+            "stop_frames_attempted": 0,
+            "stop_valid_replies": 0,
+            "stop_zero_error_replies": 0,
+            "stop_reply_all_valid": False,
+            "motor_power_removed": False,
+        }
+
+    def effective_ramp_time(self, targets, requested_ramp_time):
+        requested_ramp_time = float(requested_ramp_time)
+        if not math.isfinite(requested_ramp_time) or requested_ramp_time <= 0.0:
+            raise ValueError("ramp_time must be positive and finite")
+        with self.lock:
+            required = max(
+                abs(float(targets[name]) - self.current_deg[name])
+                / MAX_COMMAND_SPEED_DEG_S
+                for name in MOTOR_NAMES
+            )
+        return max(requested_ramp_time, required)
+
+    def update_homing_state(self, now):
+        """Return True only after the measured pose has remained near home."""
+        with self.lock:
+            if self.state != STATE_HOMING:
+                return self.state == STATE_READY
+            max_error = max(
+                abs(self.current_deg[name] - self.target_deg[name])
+                for name in MOTOR_NAMES
+            )
+            elapsed = now - self.homing_started_at
+            if elapsed >= self.homing_duration and max_error <= HOMING_TOLERANCE_DEG:
+                self.homing_stable_cycles += 1
+            else:
+                self.homing_stable_cycles = 0
+            if self.homing_stable_cycles >= HOMING_STABLE_CYCLES:
+                self.state = STATE_READY
+                self.motors_ready = True
+                print(
+                    "[startup] 归位已到达并稳定："
+                    f"max_error={max_error:.2f} deg，motors_ready=true。"
+                )
+                return True
+            if elapsed > self.homing_duration + HOMING_TIMEOUT_MARGIN_SEC:
+                raise RuntimeError(
+                    "homing did not converge: "
+                    f"max_error={max_error:.2f} deg after {elapsed:.2f}s"
+                )
+            return False
 
     def import_sdk(self):
         if self.sdk_path:
@@ -296,6 +389,7 @@ class RealUnitreeLegBridge:
 
     def start(self):
         if not self.enable_motors:
+            self.state = STATE_DRY_RUN
             self.motors_ready = True
             print("[DRY-RUN] motors disabled. HTTP commands will only update targets.")
             return
@@ -314,13 +408,21 @@ class RealUnitreeLegBridge:
 
         print(f"gear ratio: {self.gear:.3f}")
 
+        entries = {}
         try:
             for name in MOTOR_NAMES:
                 cfg = self.motors_cfg[name]
-                rt = MotorRuntime(cfg, self.sdk)
                 entry = self.find_home_entry(home, name, cfg)
                 validate_calibration_metadata(entry, name)
                 validate_home_numeric(entry, name, self.gear)
+                entries[name] = entry
+
+            # 所有文件元数据均通过后才打开串口，避免部分初始化失败时留下
+            # 只有部分电机 runtime 的危险清理路径。
+            for name in MOTOR_NAMES:
+                cfg = self.motors_cfg[name]
+                entry = entries[name]
+                rt = MotorRuntime(cfg, self.sdk)
                 rt.q_home = float(entry["q_home"])
                 self.runtime[name] = rt
                 reference = entry["calibration_reference"]
@@ -339,35 +441,58 @@ class RealUnitreeLegBridge:
             print("[startup] 请确认固定姿态后重新运行 scripts/33_calibrate_motor_home.py。")
             raise RuntimeError("invalid motor home calibration") from exc
 
-        print("reading current motor positions...")
-        for name in MOTOR_NAMES:
-            cfg = self.motors_cfg[name]
-            rt = self.runtime[name]
-            q_now = rt.read_current_rotor()
-            joint_deg = rotor_to_joint(q_now, rt.q_home, self.gear) * cfg["direction"]
+        print("reading and validating current motor positions...")
+        try:
+            for name in MOTOR_NAMES:
+                cfg = self.motors_cfg[name]
+                rt = self.runtime[name]
+                q_now = rt.read_current_rotor()
+                joint_deg = (
+                    rotor_to_joint(q_now, rt.q_home, self.gear) * cfg["direction"]
+                )
 
-            with self.lock:
-                self.current_deg[name] = joint_deg
-                self.target_deg[name] = joint_deg
+                with self.lock:
+                    self.current_deg[name] = joint_deg
+                    self.target_deg[name] = joint_deg
 
-            print(f"{name}: current={joint_deg:.2f} deg")
+                print(f"{name}: validated current={joint_deg:.2f} deg")
+        except Exception as exc:
+            self.last_error = f"startup position validation failed: {exc}"
+            self.stop_all_immediately(reason=self.last_error, fault=True)
+            raise RuntimeError(self.last_error) from exc
 
         print()
         print("固定标定姿态将作为启动归位目标：")
         print("  hip_motor=0 deg   ：髋无内外摆动")
         print("  thigh_motor=0 deg ：大腿水平（common thigh=+90 deg）")
         print("  calf_motor=0 deg  ：小腿完全收缩（crank=10 deg）")
-        print(
-            f"本次启动归位使用 {self.home_ramp_time:.2f} 秒缓动；普通 HTTP 目标 "
-            f"仍使用 {self.ramp_time:.2f} 秒缓动。"
+        required_home_time = max(
+            abs(self.current_deg[name]) / MAX_COMMAND_SPEED_DEG_S
+            for name in MOTOR_NAMES
         )
+        effective_home_time = self.effective_ramp_time(
+            {name: 0.0 for name in MOTOR_NAMES}, self.home_ramp_time
+        )
+        print(
+            f"启动归位请求时间={self.home_ramp_time:.2f}s，"
+            f"20 deg/s 限速要求至少={required_home_time:.2f}s，"
+            f"实际计划={effective_home_time:.2f}s。"
+        )
+        print(
+            f"普通 HTTP 请求时间默认={self.ramp_time:.2f}s；"
+            f"大角度命令也会按 {MAX_COMMAND_SPEED_DEG_S:.1f} deg/s 自动延长。"
+        )
+        for name in MOTOR_NAMES:
+            print(
+                f"  {name}: current={self.current_deg[name]:+.2f} deg -> 0.00 deg"
+            )
         reply = input(
             "Type YES to slowly move to the fixed calibration pose; "
             "otherwise bridge will stop and you should recalibrate: "
         ).strip()
         if reply != "YES":
             print("启动已取消：未向标定姿态归位。请释放/摆腿后重新运行 33 标定。")
-            self.stop_all_immediately()
+            self.stop_all_immediately(reason="startup cancelled", fault=False)
             raise RuntimeError("startup cancelled; recalibration required")
 
         # 首次控制循环会从刚才读取的实际 q 开始，以 home_ramp_time 缓动到
@@ -375,12 +500,17 @@ class RealUnitreeLegBridge:
         with self.lock:
             for name in MOTOR_NAMES:
                 self.target_deg[name] = 0.0
-                self.target_ramp_time[name] = self.home_ramp_time
+                self.target_ramp_time[name] = effective_home_time
+            self.last_accepted_ramp_time = effective_home_time
+            self.homing_started_at = time.time()
+            self.homing_duration = effective_home_time
+            self.homing_stable_cycles = 0
+            self.state = STATE_HOMING
 
-        print("[startup] 已确认：正在慢速回到固定标定姿态。")
-        self.motors_ready = True
-        thread = threading.Thread(target=self.control_loop, daemon=True)
-        thread.start()
+        print("[startup] 已确认：开始归位；到达并稳定前 motors_ready=false。")
+        self.motors_ready = False
+        self.control_thread = threading.Thread(target=self.control_loop, daemon=True)
+        self.control_thread.start()
 
     def control_loop(self):
         # 置空使启动确认后的 0/0/0 被识别为新目标；q_start 是启动时读取到
@@ -434,12 +564,15 @@ class RealUnitreeLegBridge:
                     with self.lock:
                         self.current_deg[name] = joint_now * cfg["direction"]
 
+                self.update_homing_state(now)
+
                 time.sleep(self.dt)
 
         except Exception as exc:
             self.last_error = str(exc)
             print(f"EMERGENCY STOP: {exc}")
-            self.stop_all_immediately()
+            self.stop_all_immediately(reason=self.last_error, fault=True)
+            self.request_server_shutdown()
         finally:
             self.motors_ready = False
 
@@ -456,8 +589,6 @@ class RealUnitreeLegBridge:
             raise RuntimeError("bridge motors are not ready or a fault is latched")
 
         requested_ramp_time = self.ramp_time if ramp_time is None else float(ramp_time)
-        if not math.isfinite(requested_ramp_time) or requested_ramp_time <= 0.0:
-            raise ValueError("ramp_time must be positive")
 
         for name in MOTOR_NAMES:
             cfg = self.motors_cfg[name]
@@ -468,13 +599,10 @@ class RealUnitreeLegBridge:
                 name,
             )
 
+        effective_ramp_time = self.effective_ramp_time(
+            new_targets, requested_ramp_time
+        )
         with self.lock:
-            required_ramp_time = max(
-                abs(new_targets[name] - self.current_deg[name])
-                / MAX_COMMAND_SPEED_DEG_S
-                for name in MOTOR_NAMES
-            )
-            effective_ramp_time = max(requested_ramp_time, required_ramp_time)
             self.target_deg.update(new_targets)
             for name in MOTOR_NAMES:
                 self.target_ramp_time[name] = effective_ramp_time
@@ -482,44 +610,128 @@ class RealUnitreeLegBridge:
 
         return new_targets
 
-    def stop_all_immediately(self):
-        """启动确认被取消时，仅发送 mode=0，不建立位置保持。"""
-        if not self.runtime:
-            return
-        print("[startup] sending motor stop mode")
-        for _ in range(3):
-            for rt in self.runtime.values():
-                rt.send_stop()
-            time.sleep(self.dt)
-        self.stopped = True
-        self.running = False
-        self.motors_ready = False
+    def request_server_shutdown(self):
+        callback = self.server_shutdown_callback
+        if callback is not None:
+            threading.Thread(target=callback, daemon=True).start()
 
-    def safe_stop_all(self):
-        if not self.enable_motors or not self.runtime:
-            return
-        if self.stopped or self.stopping:
-            return
+    def stop_all(self, reason="operator requested stop", fault=False, allow_fade=True):
+        """
+        停止状态机。
 
-        self.stopping = True
+        只有每台电机均有验证过的当前位置、且不是故障路径时才允许短暂渐隐；
+        否则只发送零刚度 mode=0，绝不使用未验证 q 作为位置目标。
+        """
+        with self.stop_lock:
+            if self.stopped:
+                return dict(self.stop_result)
 
-        print("[safe_stop_all] fading kp/kd")
-        fade_steps = max(1, int(1.0 / self.dt))
-        for step in range(fade_steps):
-            fade = 1.0 - step / fade_steps
-            for name, rt in self.runtime.items():
-                cfg = self.motors_cfg[name]
-                rt.send_motor(rt.data.q, 0.0, self.kp * fade, self.kd * fade, 0.0)
-            time.sleep(self.dt)
+            self.running = False
+            self.motors_ready = False
+            self.stopping = True
+            self.state = STATE_FAULT if fault else STATE_STOPPING
+            if fault:
+                self.last_error = reason
 
-        print("[safe_stop_all] sending motor stop mode")
-        for _ in range(20):
-            for rt in self.runtime.values():
-                rt.send_stop()
-            time.sleep(self.dt)
+            if (
+                self.control_thread is not None
+                and self.control_thread.is_alive()
+                and threading.current_thread() is not self.control_thread
+            ):
+                self.control_thread.join(timeout=1.0)
 
-        self.stopped = True
-        self.stopping = False
+            result = {
+                "stop_requested": True,
+                "reason": str(reason),
+                "fault": bool(fault),
+                "soft_release_attempted": False,
+                "soft_release_complete": False,
+                "stop_frames_attempted": 0,
+                "stop_valid_replies": 0,
+                "stop_zero_error_replies": 0,
+                "stop_reply_all_valid": False,
+                # 软件无法证明主电源已经物理断开。
+                "motor_power_removed": False,
+            }
+
+            if not self.enable_motors or not self.runtime:
+                self.stopped = True
+                self.stopping = False
+                self.state = STATE_FAULT if fault else STATE_STOPPED
+                self.stop_result = result
+                return dict(result)
+
+            can_fade = (
+                allow_fade
+                and not fault
+                and all(rt.position_valid for rt in self.runtime.values())
+            )
+            if can_fade:
+                print("[stop] validated positions available; fading kp/kd")
+                result["soft_release_attempted"] = True
+                fade_ok = True
+                fade_steps = max(1, int(0.5 / self.dt))
+                try:
+                    for step in range(fade_steps):
+                        fade = 1.0 - step / fade_steps
+                        for rt in self.runtime.values():
+                            rt.send_motor(
+                                float(rt.data.q),
+                                0.0,
+                                self.kp * fade,
+                                self.kd * fade,
+                                0.0,
+                            )
+                        time.sleep(self.dt)
+                except Exception as exc:
+                    fade_ok = False
+                    self.last_error = f"soft release failed: {exc}"
+                    print(f"[stop] soft release aborted: {exc}")
+                result["soft_release_complete"] = fade_ok
+            else:
+                print("[stop] skipping position hold; sending mode=0 only")
+
+            print("[stop] sending zero-stiffness mode=0 frames")
+            for _ in range(STOP_REPEAT_COUNT):
+                for rt in self.runtime.values():
+                    result["stop_frames_attempted"] += 1
+                    try:
+                        reply = rt.send_stop()
+                    except Exception as exc:
+                        print(f"[stop] stop send exception: {exc}")
+                        continue
+                    if reply["reply_valid"]:
+                        result["stop_valid_replies"] += 1
+                        if reply["merror"] == 0:
+                            result["stop_zero_error_replies"] += 1
+                time.sleep(self.dt)
+
+            result["stop_reply_all_valid"] = (
+                result["stop_frames_attempted"] > 0
+                and result["stop_valid_replies"]
+                == result["stop_frames_attempted"]
+                and result["stop_zero_error_replies"]
+                == result["stop_frames_attempted"]
+            )
+            self.stop_result = result
+            self.stopped = True
+            self.stopping = False
+            self.state = STATE_FAULT if fault else STATE_STOPPED
+            print(
+                "[stop] complete: "
+                f"valid replies={result['stop_valid_replies']}/"
+                f"{result['stop_frames_attempted']}; "
+                f"zero-error replies={result['stop_zero_error_replies']}/"
+                f"{result['stop_frames_attempted']}; "
+                "physical motor power is NOT verified removed"
+            )
+            return dict(result)
+
+    def stop_all_immediately(self, reason="immediate stop", fault=True):
+        return self.stop_all(reason=reason, fault=fault, allow_fade=False)
+
+    def safe_stop_all(self, reason="normal stop"):
+        return self.stop_all(reason=reason, fault=False, allow_fade=True)
 
     def bridge_to_common_deg(self, bridge_deg):
         """
@@ -585,6 +797,8 @@ class RealUnitreeLegBridge:
             target_bridge = dict(self.target_deg)
             current_bridge = dict(self.current_deg)
             last_error = self.last_error
+            state = self.state
+            stop_result = dict(self.stop_result)
 
         common_mapping_error = ""
         try:
@@ -602,9 +816,12 @@ class RealUnitreeLegBridge:
             common_mapping_error = str(exc)
 
         return {
-            "ok": True,
+            "ok": state in (STATE_DRY_RUN, STATE_HOMING, STATE_READY)
+            and not last_error,
+            "state": state,
             "enable_motors": self.enable_motors,
             "motors_ready": self.motors_ready,
+            "homing_complete": state in (STATE_READY, STATE_DRY_RUN),
 
             # 原有 bridge 坐标：相对上电标定姿态的电机命令/读数。
             "target_deg": target_bridge,
@@ -628,13 +845,14 @@ class RealUnitreeLegBridge:
             "last_accepted_ramp_time": self.last_accepted_ramp_time,
             "max_command_speed_deg_s": MAX_COMMAND_SPEED_DEG_S,
             "home_ramp_time": self.home_ramp_time,
+            "stop_status": stop_result,
         }
 
 
 
 
-    def stop(self):
-        self.running = False
+    def stop(self, reason="operator requested stop"):
+        return self.safe_stop_all(reason=reason)
 
 
 def make_handler(bridge):
@@ -660,8 +878,21 @@ def make_handler(bridge):
 
         def do_POST(self):
             if self.path == "/stop":
-                bridge.stop()
-                self.send_json({"ok": True, "message": "stopping"})
+                result = bridge.stop(reason="HTTP /stop requested")
+                self.send_json(
+                    {
+                        "ok": bool(result.get("stop_reply_all_valid"))
+                        if bridge.enable_motors
+                        else True,
+                        "message": "stop sequence completed; HTTP server is closing",
+                        "stop_status": result,
+                        "warning": (
+                            "Software cannot verify that physical motor power "
+                            "has been removed."
+                        ),
+                    }
+                )
+                bridge.request_server_shutdown()
                 return
 
             if self.path != "/set_motor_commands":
@@ -735,12 +966,19 @@ def main():
     )
     args = parser.parse_args()
 
-    if args.dt <= 0.0:
-        raise ValueError("--dt must be positive")
-    if args.ramp_time <= 0.0:
-        raise ValueError("--ramp-time must be positive")
-    if args.home_ramp_time <= 0.0:
-        raise ValueError("--home-ramp-time must be positive")
+    for name, value in (
+        ("--kp", args.kp),
+        ("--kd", args.kd),
+        ("--dt", args.dt),
+        ("--ramp-time", args.ramp_time),
+        ("--home-ramp-time", args.home_ramp_time),
+    ):
+        if not math.isfinite(value):
+            raise ValueError(f"{name} must be finite")
+    if args.kp < 0.0 or args.kd < 0.0:
+        raise ValueError("--kp and --kd must be non-negative")
+    if args.dt <= 0.0 or args.ramp_time <= 0.0 or args.home_ramp_time <= 0.0:
+        raise ValueError("--dt, --ramp-time and --home-ramp-time must be positive")
 
     bridge = RealUnitreeLegBridge(
         motors_cfg=DEFAULT_MOTORS,
@@ -775,6 +1013,8 @@ def main():
         print(f"  curl -X POST http://{args.host}:{args.port}/stop")
         sys.exit(1)
 
+    bridge.server_shutdown_callback = server.shutdown
+
     try:
         bridge.start()
         server.serve_forever()
@@ -783,9 +1023,8 @@ def main():
     except Exception as exc:
         print(f"bridge startup/runtime failed: {exc}")
     finally:
-        bridge.stop()
+        bridge.stop(reason="bridge process exiting")
         server.server_close()
-        bridge.safe_stop_all()
         print("bridge closed")
 
 

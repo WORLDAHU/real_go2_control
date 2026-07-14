@@ -23,6 +23,7 @@ import json
 import sys
 import time
 import urllib.request
+import urllib.parse
 from pathlib import Path
 
 import mujoco
@@ -49,6 +50,13 @@ def post_json(url, body):
         return json.loads(resp.read().decode("utf-8"))
 
 
+def bridge_stop_url(command_url):
+    parsed = urllib.parse.urlsplit(command_url)
+    return urllib.parse.urlunsplit(
+        (parsed.scheme, parsed.netloc, "/stop", "", "")
+    )
+
+
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--mode", choices=["print", "http"], default="print")
@@ -56,6 +64,10 @@ def main():
     parser.add_argument("--rate", type=float, default=50.0)
     parser.add_argument("--duration", type=float, default=None)
     args = parser.parse_args()
+    if args.rate <= 0.0:
+        raise ValueError("--rate must be positive")
+    if args.duration is not None and args.duration <= 0.0:
+        raise ValueError("--duration must be positive")
 
     model = mujoco.MjModel.from_xml_path(str(MJCF_PATH))
     data = mujoco.MjData(model)
@@ -74,7 +86,7 @@ def main():
     print("end_time:", end_time, "s")
     if args.mode == "http":
         print("url:", args.url)
-    print("Ctrl+C stop")
+    print("Ctrl+C will request bridge /stop in HTTP mode")
     print()
 
     next_send_wall = time.time()
@@ -101,6 +113,8 @@ def main():
             if args.mode == "http":
                 resp = post_json(args.url, body)
                 ok = resp.get("ok", False)
+                if not ok:
+                    raise RuntimeError(f"bridge rejected command: {resp}")
             else:
                 ok = True
 
@@ -117,6 +131,23 @@ def main():
 
     except KeyboardInterrupt:
         print("\nstopped by user")
+    finally:
+        if args.mode == "http":
+            stop_url = bridge_stop_url(args.url)
+            try:
+                response = post_json(stop_url, {})
+                confirmed = bool(
+                    response.get("ok")
+                    and response.get("stop_status", {}).get(
+                        "stop_reply_all_valid", False
+                    )
+                )
+                print(f"bridge stop requested: confirmed={confirmed}")
+                if not confirmed:
+                    print("WARNING: stop replies were not fully confirmed; cut motor power.")
+            except Exception as exc:
+                print(f"WARNING: bridge /stop failed: {exc}")
+                print("Cut motor power and verify no bridge process remains.")
 
 
 if __name__ == "__main__":

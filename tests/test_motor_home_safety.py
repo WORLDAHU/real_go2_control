@@ -1,5 +1,6 @@
 import importlib.util
 import sys
+import time
 import unittest
 from pathlib import Path
 
@@ -18,6 +19,7 @@ def load_script(name, filename):
 calibrate = load_script("calibrate_motor_home", "33_calibrate_motor_home.py")
 bridge = load_script("real_unitree_leg_bridge", "32_real_unitree_leg_bridge.py")
 single_motor = load_script("test_leg_motor_angle", "37_test_leg_motor_angle.py")
+release_motor = load_script("release_leg_motors", "39_release_leg_motors.py")
 
 
 class FakeMotorData:
@@ -119,6 +121,110 @@ class MotorHomeSafetyTests(unittest.TestCase):
         )
         self.assertEqual(accepted["thigh_motor"], -20.0)
         self.assertEqual(controller.last_accepted_ramp_time, 2.0)
+
+    def test_bridge_runtime_rejects_timeout_bad_frame_wrong_id_and_fault(self):
+        runtime = object.__new__(bridge.MotorRuntime)
+        runtime.cfg = {"label": "hip", "id": 2}
+        runtime.data = FakeMotorData()
+        runtime.position_valid = False
+        cases = (
+            (False, True, 2, 0, "timeout"),
+            (True, False, 2, 0, "CRC"),
+            (True, True, 1, 0, "reply id"),
+            (True, True, 2, 5, "motor fault"),
+        )
+        for ok, correct, motor_id, merror, message in cases:
+            runtime.data.correct = correct
+            runtime.data.motor_id = motor_id
+            runtime.data.merror = merror
+            runtime.data.q = 1.0
+            with self.subTest(message=message):
+                with self.assertRaisesRegex(RuntimeError, message):
+                    runtime.validate_reply(ok)
+
+    def test_single_motor_command_rejects_motor_fault(self):
+        sdk = FakeSDK([(True, True, 2, 5, 1.0)])
+        serial = sdk.SerialPort("/dev/null")
+        with self.assertRaisesRegex(RuntimeError, "motor fault"):
+            single_motor.send_cmd(
+                sdk, serial, sdk.MotorCmd(), sdk.MotorData(), 2,
+                q=0.0, dq=0.0, kp=0.0, kd=0.0, tau=0.0,
+            )
+
+    def test_release_command_rejects_timeout_before_using_position(self):
+        sdk = FakeSDK([(False, False, 2, 0, 7.3e24)])
+        serial = sdk.SerialPort("/dev/null")
+        with self.assertRaisesRegex(RuntimeError, "timeout"):
+            release_motor.send_cmd(
+                sdk, serial, sdk.MotorCmd(), sdk.MotorData(), 2,
+                mode=1, q=0.0, dq=0.0, kp=0.0, kd=0.0, tau=0.0,
+            )
+
+    def test_fault_stop_never_uses_unvalidated_position_hold(self):
+        class FakeRuntime:
+            position_valid = False
+
+            def __init__(self):
+                self.motor_commands = 0
+                self.stop_commands = 0
+
+            def send_motor(self, *_args):
+                self.motor_commands += 1
+
+            def send_stop(self):
+                self.stop_commands += 1
+                return {"reply_valid": True, "merror": 0}
+
+        controller = bridge.RealUnitreeLegBridge(
+            motors_cfg=bridge.DEFAULT_MOTORS,
+            enable_motors=True,
+            dt=0.00001,
+        )
+        runtimes = {name: FakeRuntime() for name in bridge.MOTOR_NAMES}
+        controller.runtime = runtimes
+        result = controller.stop_all_immediately("bad startup read", fault=True)
+        self.assertFalse(result["soft_release_attempted"])
+        self.assertTrue(result["stop_reply_all_valid"])
+        self.assertEqual(sum(rt.motor_commands for rt in runtimes.values()), 0)
+        self.assertEqual(
+            sum(rt.stop_commands for rt in runtimes.values()),
+            bridge.STOP_REPEAT_COUNT * len(bridge.MOTOR_NAMES),
+        )
+
+    def test_homing_is_not_ready_until_measured_pose_is_stable(self):
+        controller = bridge.RealUnitreeLegBridge(
+            motors_cfg=bridge.DEFAULT_MOTORS,
+            enable_motors=True,
+        )
+        now = time.time()
+        controller.state = bridge.STATE_HOMING
+        controller.homing_started_at = now - 2.0
+        controller.homing_duration = 1.0
+        controller.target_deg = {name: 0.0 for name in bridge.MOTOR_NAMES}
+        controller.current_deg = {name: 10.0 for name in bridge.MOTOR_NAMES}
+        self.assertFalse(controller.update_homing_state(now))
+        self.assertFalse(controller.motors_ready)
+
+        controller.current_deg = {name: 0.5 for name in bridge.MOTOR_NAMES}
+        for _ in range(bridge.HOMING_STABLE_CYCLES - 1):
+            self.assertFalse(controller.update_homing_state(now))
+        self.assertTrue(controller.update_homing_state(now))
+        self.assertTrue(controller.motors_ready)
+        self.assertEqual(controller.state, bridge.STATE_READY)
+
+    def test_homing_timeout_latches_failure(self):
+        controller = bridge.RealUnitreeLegBridge(
+            motors_cfg=bridge.DEFAULT_MOTORS,
+            enable_motors=True,
+        )
+        controller.state = bridge.STATE_HOMING
+        controller.homing_duration = 1.0
+        controller.homing_started_at = 0.0
+        controller.current_deg = {name: 20.0 for name in bridge.MOTOR_NAMES}
+        with self.assertRaisesRegex(RuntimeError, "did not converge"):
+            controller.update_homing_state(
+                bridge.HOMING_TIMEOUT_MARGIN_SEC + 1.1
+            )
 
 
 if __name__ == "__main__":

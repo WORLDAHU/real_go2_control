@@ -74,6 +74,23 @@ def setup_cmd(sdk, cmd, motor_id):
     cmd.id = motor_id
 
 
+def validate_reply(ok, data, motor_id, allow_motor_fault=False):
+    if not bool(ok):
+        raise RuntimeError("sendRecv timeout/no reply")
+    if not bool(data.correct):
+        raise RuntimeError("invalid CRC/frame")
+    if int(data.motor_id) != int(motor_id):
+        raise RuntimeError(
+            f"reply id={int(data.motor_id)}, expected {int(motor_id)}"
+        )
+    q = float(data.q)
+    if not math.isfinite(q) or abs(q) > MAX_ABS_Q_HOME_RAD:
+        raise RuntimeError(f"invalid rotor q={q!r}")
+    if not allow_motor_fault and int(data.merror) != 0:
+        raise RuntimeError(f"motor fault merror={int(data.merror)}")
+    return q
+
+
 def send_cmd(sdk, serial, cmd, data, motor_id, q, dq, kp, kd, tau):
     setup_cmd(sdk, cmd, motor_id)
     data.motorType = sdk.MotorType.GO_M8010_6
@@ -83,8 +100,9 @@ def send_cmd(sdk, serial, cmd, data, motor_id, q, dq, kp, kd, tau):
     cmd.kp = kp
     cmd.kd = kd
     cmd.tau = tau
-    serial.sendRecv(cmd, data)
-    return float(data.q), float(data.dq), int(data.merror)
+    ok = serial.sendRecv(cmd, data)
+    q_read = validate_reply(ok, data, motor_id)
+    return q_read, float(data.dq), int(data.merror)
 
 
 def send_stop(sdk, serial, cmd, data, motor_id):
@@ -105,8 +123,13 @@ def send_stop(sdk, serial, cmd, data, motor_id):
     cmd.kp = 0.0
     cmd.kd = 0.0
     cmd.tau = 0.0
-    serial.sendRecv(cmd, data)
-    return int(data.merror)
+    ok = bool(serial.sendRecv(cmd, data))
+    valid = (
+        ok
+        and bool(data.correct)
+        and int(data.motor_id) == int(motor_id)
+    )
+    return {"reply_valid": valid, "merror": int(data.merror) if valid else None}
 
 
 def load_home(path):
@@ -295,9 +318,23 @@ def soft_release(sdk, serial, cmd, data, motor_id, kp, kd):
         time.sleep(0.01)
 
     print("send motor stop mode...")
-    for _ in range(20):
-        send_stop(sdk, serial, cmd, data, motor_id)
+    return stop_only(sdk, serial, cmd, data, motor_id)
+
+
+def stop_only(sdk, serial, cmd, data, motor_id, repeats=20):
+    valid = 0
+    zero_error = 0
+    for _ in range(repeats):
+        try:
+            reply = send_stop(sdk, serial, cmd, data, motor_id)
+            if reply["reply_valid"]:
+                valid += 1
+                zero_error += int(reply["merror"] == 0)
+        except Exception as exc:
+            print(f"stop send failed: {exc}")
         time.sleep(0.01)
+    print(f"stop replies valid={valid}/{repeats}, zero_error={zero_error}/{repeats}")
+    return valid == repeats and zero_error == repeats
 
 
 def main():
@@ -318,6 +355,14 @@ def main():
     parser.add_argument("--ramp-sec", type=float, default=1.0)
     parser.add_argument("--hold-sec", type=float, default=1.0)
     args = parser.parse_args()
+
+    numeric = (args.angle_deg, args.kp, args.kd, args.ramp_sec, args.hold_sec)
+    if not all(math.isfinite(value) for value in numeric):
+        print("Refusing to run: all numeric arguments must be finite.")
+        return 1
+    if args.kp < 0.0 or args.kd < 0.0 or args.ramp_sec <= 0.0 or args.hold_sec < 0.0:
+        print("Refusing to run: kp/kd/hold must be non-negative and ramp must be positive.")
+        return 1
 
     cfg = dict(DEFAULT_MOTORS[args.motor])
     if args.min_deg is not None:
@@ -361,38 +406,64 @@ def main():
     serial = sdk.SerialPort(cfg["port"])
     cmd = sdk.MotorCmd()
     data = sdk.MotorData()
-
-    current_deg, err = read_current_joint(
-        sdk, serial, cmd, data, cfg, q_home, gear
-    )
-    print(f"current={current_deg:+.2f} deg, err={err}")
-    print()
-
-    reply = input("Type YES to move this motor: ").strip().upper()
-    if reply != "YES":
-        print("Cancelled.")
-        return 0
-
+    position_valid = False
+    motion_confirmed = False
+    had_fault = False
+    result_code = 0
     try:
-        move_to_angle(
-            sdk=sdk,
-            serial=serial,
-            cmd=cmd,
-            data=data,
-            cfg=cfg,
-            q_home=q_home,
-            gear=gear,
-            angle_deg=args.angle_deg,
-            ramp_sec=args.ramp_sec,
-            hold_sec=args.hold_sec,
-            kp=args.kp,
-            kd=args.kd,
+        print(
+            "注意：下面的当前位置读取会发送零刚度 FOC 查询帧；"
+            "确认没有 bridge 或其他串口程序运行。"
         )
-    finally:
-        soft_release(sdk, serial, cmd, data, cfg["id"], args.kp, args.kd)
+        current_deg, err = read_current_joint(
+            sdk, serial, cmd, data, cfg, q_home, gear
+        )
+        position_valid = True
+        print(f"current={current_deg:+.2f} deg, err={err}")
+        print()
 
-    print("Done.")
-    return 0
+        reply = input("Type YES to move this motor: ").strip().upper()
+        if reply != "YES":
+            print("Cancelled; sending mode=0 stop frames.")
+        else:
+            motion_confirmed = True
+            move_to_angle(
+                sdk=sdk,
+                serial=serial,
+                cmd=cmd,
+                data=data,
+                cfg=cfg,
+                q_home=q_home,
+                gear=gear,
+                angle_deg=args.angle_deg,
+                ramp_sec=args.ramp_sec,
+                hold_sec=args.hold_sec,
+                kp=args.kp,
+                kd=args.kd,
+            )
+    except Exception as exc:
+        had_fault = True
+        result_code = 1
+        print(f"FAULT: {exc}")
+    finally:
+        cleanup_ok = False
+        if position_valid and motion_confirmed and not had_fault:
+            try:
+                cleanup_ok = soft_release(
+                    sdk, serial, cmd, data, cfg["id"], args.kp, args.kd
+                )
+            except Exception as exc:
+                print(f"soft release failed: {exc}; switching to mode=0 only")
+                cleanup_ok = stop_only(sdk, serial, cmd, data, cfg["id"])
+        else:
+            cleanup_ok = stop_only(sdk, serial, cmd, data, cfg["id"])
+        if not cleanup_ok:
+            result_code = 1
+            print("WARNING: stop replies were not fully confirmed; cut motor power.")
+
+    if motion_confirmed and result_code == 0:
+        print("Done; stop replies confirmed. Physical power state is not verified.")
+    return result_code
 
 
 if __name__ == "__main__":

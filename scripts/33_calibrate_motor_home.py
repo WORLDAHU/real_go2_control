@@ -296,7 +296,9 @@ def main():
 
     print()
     print(f"saved: {home_path}")
-    print("Next: start the bridge with --enable-motors, then test one motor with +/-3 deg.")
+    print("Next: keep bridge stopped and run scripts/37_test_leg_motor_angle.py")
+    print("one motor at a time. Start scripts/32 only after script 37 has exited.")
+    print("Note: thigh bridge commands use [-120, 0] deg; test a small negative angle.")
     return 0
 
 
