@@ -19,8 +19,9 @@ HOME_FILE = os.path.expanduser("~/motor_home.json")
 MAX_ABS_Q_HOME_RAD = 10000.0
 TWO_PI = 2.0 * math.pi
 
-# 与 33/32 一致：q_home 不是笼统的机械零位，而是在固定标定姿态记录的
-# 编码器参考。单电机脚本也必须拒绝旧格式或错误姿态的 home 文件。
+# 与 33/32 一致：GO-M8010-6 是转子侧单圈绝对式编码器；q_home 是在固定
+# 标定姿态记录的单圈相位参考，不是输出轴多圈绝对角或笼统机械零位。
+# 单电机脚本会将它对齐到当前累计圈数分支，并拒绝旧格式 home 文件。
 _CALIBRATION_MODEL = RealLegCommandAdapter()
 EXPECTED_CALIBRATION_METADATA = {
     "hip_motor": {"common_deg": 0.0},
@@ -46,7 +47,7 @@ DEFAULT_MOTORS = {
         "id": 0,
         "direction": 1.0,
         # 这里的 angle-deg 是 bridge 坐标，不是 common thigh_pitch。
-        # 上电标定时大腿水平（common=+90）对应 bridge=0；若 common 安全
+        # 固定标定姿态的大腿水平（common=+90）对应 bridge=0；若 common 安全
         # 范围为 [-30, +90]，则 bridge 安全范围必须是 [-120, 0]。
         "min_deg": -120.0,
         "max_deg": 0.0,

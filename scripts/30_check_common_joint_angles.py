@@ -73,7 +73,7 @@ def main():
     print("  thigh_pitch   =  1 * (thigh_joint - 0 deg)")
     print("  knee_pitch    =  1 * (calf_joint  - 0 deg)")
     print()
-    print("common_joint_deg -> bridge_cmd_deg (fixed power-on calibration pose):")
+    print("common_joint_deg -> bridge_cmd_deg (fixed calibration pose):")
     print("  hip_motor   = hip_abduction - 0 deg")
     print("  thigh_motor = thigh_pitch   - 90 deg  # bridge=0 means thigh horizontal")
     print("  calf_motor  = four-bar inverse(knee_pitch)")

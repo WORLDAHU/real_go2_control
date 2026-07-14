@@ -26,7 +26,7 @@
 ## 当前实机工具
 
 - `32_real_unitree_leg_bridge.py`：唯一正式三电机 bridge 和 HTTP 控制入口。
-- `33_calibrate_motor_home.py`：唯一正式上电零点标定入口，保存 `~/motor_home.json`。
+- `33_calibrate_motor_home.py`：唯一正式固定姿态编码器参考标定入口，保存 `~/motor_home.json`。
 - `36_verify_calf_fourbar_mapping.py`：小腿四连杆纯数学验证，不访问串口。
 - `37_test_leg_motor_angle.py`：读取统一 home 文件的单电机角度测试。
 - `38_real_leg_pose_sequence.py`：通过现有 bridge 发送三电机平滑姿态序列。
@@ -40,11 +40,15 @@
 3. HTTP 端口不同不代表电机访问互不冲突；多个进程打开相同 USB/RS485 仍会抢占电机。
 4. `28_mock_real_leg_bridge.py` 不访问串口，但不要让它与真实 bridge 绑定同一个 HTTP 端口。
 5. `33`、`37`、`39` 直接访问串口，运行前必须确认真实 bridge 已完全退出。
-6. 正式上电标定只使用 `33_calibrate_motor_home.py`，不要恢复旧的独立小腿 home 文件。
+6. 正式固定姿态标定只使用 `33_calibrate_motor_home.py`，不要恢复旧的独立小腿 home 文件。
 
-## 固定上电标定姿态
+## 固定标定姿态与编码器类型
 
-`bridge_cmd_deg = 0` 表示回到固定上电标定姿态，不表示三个 common 机械角全部为零：
+GO-M8010-6 使用转子侧单圈绝对式编码器。单圈相位是绝对的，但电机断电后
+固件不保留累计圈数，因此同一姿态的 `data.q` 可能相差整数个 `2π`。Bridge
+会对齐这个累计圈数分支；它不能替代多圈绝对或输出轴绝对传感器。
+
+`bridge_cmd_deg = 0` 表示回到固定标定姿态，不表示三个 common 机械角全部为零：
 
 - `hip_motor = 0°`：`common hip_abduction = 0°`，髋无内外摆动。
 - `thigh_motor = 0°`：`common thigh_pitch = +90°`，大腿水平。

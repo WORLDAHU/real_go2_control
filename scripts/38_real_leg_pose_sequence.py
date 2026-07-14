@@ -8,7 +8,7 @@ import urllib.request
 
 MOTOR_LIMITS = {
     "hip_motor": (-30.0, 30.0),
-    # bridge thigh=0 是大腿水平的上电标定姿态（common thigh=+90），
+    # bridge thigh=0 是大腿水平的固定标定姿态（common thigh=+90），
     # 不是 common thigh 的 0 度机械零位。
     "thigh_motor": (-120.0, 0.0),
     "calf_motor": (-180.0, 0.0),
@@ -17,7 +17,7 @@ MOTOR_LIMITS = {
 
 PRESETS = {
     # 本文件的 hip/thigh/calf 均是 bridge_cmd_deg，不是 common_joint_deg。
-    # 特别是 thigh=0 表示大腿水平的上电标定姿态（common thigh=+90）。
+    # 特别是 thigh=0 表示大腿水平的固定标定姿态（common thigh=+90）。
     # First real-leg coordination test. This is intentionally not a jump.
     "micro": [
         {"name": "neutral", "hip": 0.0, "thigh": 0.0, "calf": -20.0, "move": 1.0, "hold": 1.0},

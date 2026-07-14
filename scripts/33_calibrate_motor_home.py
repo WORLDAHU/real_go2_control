@@ -45,18 +45,24 @@ MIN_VALID_REPLY_RATIO = 0.80
 
 
 # ============================================================================
-# GO2 左后腿实机：上电标定姿态与“零点”约定
+# GO2 左后腿实机：固定标定姿态、单圈绝对编码器与“零点”约定
 # ============================================================================
 #
 # 本项目同时存在仿真/RL、机械关节、真实电机编码器和四连杆小腿四个层级。
 # 因此必须区分下列概念，不能把它们都称为“零点”。
 #
 # 1. 电机编码器角 q（rad）
-#    GO-M8010-6 返回的原始转子位置 data.q。它不是直接可用的机械关节角。
+#    GO-M8010-6 使用转子侧单圈绝对式编码器。data.q 包含转子单圈绝对相位；
+#    电机持续上电时固件还会累计圈数，因此 q 可以超出 [0, 2*pi)。断开电机
+#    动力电源后累计圈数不保留，同一转子相位的 q 可能改变整数个 2*pi。
+#    它不是输出轴多圈绝对角，也不是直接可用的机械关节角。
 #
-# 2. 上电标定参考 q_home（rad）
-#    本脚本在“固定标定姿态”读到的 q。它只是本次上电的软件参考原点，
-#    不是电机出厂零点，也不等于 common 机械关节零位。
+# 2. 固定姿态编码器参考 q_home（rad）
+#    本脚本在“固定标定姿态”读到的 q。它保存该姿态对应的转子绝对相位
+#    参考，不是电机出厂零点，也不等于 common 机械关节零位。bridge 启动时
+#    会给 q_home 加减整数个 2*pi，使它与当前累计圈数分支对齐。
+#    若机械装配未改变，q_home 并非仅在本次进程或本次上电内才有意义；但
+#    由于没有输出轴多圈绝对传感器，仍须人工确认关节位于正确机械分支。
 #
 #    bridge 对 bridge_cmd_deg 的底层换算为：
 #      q_target = q_home + radians(bridge_cmd_deg * direction) * gear_ratio
@@ -65,10 +71,10 @@ MIN_VALID_REPLY_RATIO = 0.80
 #
 # 3. common_joint_deg（deg）
 #    固定的机械关节坐标，用于仿真、RL、运动学和机械限位讨论；它不随
-#    每次上电或 q_home 改变。
+#    电机断电、SDK 累计圈数分支或 q_home 改变。
 #
 # 4. bridge_cmd_deg（deg）
-#    相对“本次上电标定姿态”的实机命令坐标；不是绝对机械关节角。
+#    相对“固定标定姿态”的实机命令坐标；不是绝对机械关节角。
 #
 # 每次运行本脚本前，必须先释放电机，并手动把腿摆到同一套固定姿态：
 #
@@ -80,7 +86,7 @@ MIN_VALID_REPLY_RATIO = 0.80
 #   thigh_motor：大腿水平
 #       common thigh_pitch  = +90.00 deg
 #       bridge thigh_motor  =   0.00 deg
-#       大腿水平是“上电标定姿态”，不是 common thigh_pitch 的机械零位。
+#       大腿水平是“固定标定姿态”，不是 common thigh_pitch 的机械零位。
 #       例如 common +60 deg 对应 bridge -30 deg；common 0 deg 对应
 #       bridge -90 deg。
 #
@@ -105,7 +111,7 @@ CALIBRATION_COMMON_REFERENCE = {
     "thigh_motor": {
         "joint_name": "thigh_pitch",
         "common_deg": 90.0,
-        "description": "大腿水平；上电标定参考，不是 common 机械零位。",
+        "description": "大腿水平；固定姿态编码器参考，不是 common 机械零位。",
     },
     "calf_motor": {
         "joint_name": "knee_pitch",
@@ -197,7 +203,10 @@ def read_current_rotor(sdk, port, motor_id, samples, dt):
 
 def build_arg_parser():
     parser = argparse.ArgumentParser(
-        description="Read current Unitree motor rotor positions and save them as this power-on home."
+        description=(
+            "Read Unitree single-turn absolute rotor positions at the fixed "
+            "calibration pose and save the phase references."
+        )
     )
     parser.add_argument(
         "--sdk-path",
@@ -227,7 +236,7 @@ def main():
     if args.dt < 0.0:
         raise ValueError("--dt must be non-negative")
 
-    print("Unitree motor home calibration")
+    print("Unitree fixed-pose rotor phase reference calibration")
     print("This only reads rotor position; it does not command motion.")
     print()
     print("Before continuing:")

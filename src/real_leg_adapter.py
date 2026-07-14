@@ -142,12 +142,12 @@ class SimToCommonJoint:
 @dataclass(frozen=True)
 class DirectMotorCalibration:
     """
-    直驱关节的固定上电标定姿态。
+    直驱关节的固定标定姿态。
 
     本项目要区分两个坐标：
 
     - common_joint_deg：固定机械角，用于仿真、RL 和运动学；不会因重启改变。
-    - bridge_cmd_deg：相对本次上电标定姿态的电机命令。bridge_cmd=0 表示
+    - bridge_cmd_deg：相对固定标定姿态的电机命令。bridge_cmd=0 表示
       回到运行 33_calibrate_motor_home.py 时的人工摆放姿态。
 
     common_at_calibration_deg 是该人工摆放姿态在 common 坐标中的值。
@@ -266,7 +266,7 @@ class FourBarConfig:
 class RealLegCommandAdapter:
     """
     三层角度适配：
-    注意区分上电零点标定
+    注意区分固定机械角、固定姿态编码器参考和 bridge 相对命令
     1. sim_joint_deg：
        MuJoCo / URDF 里的仿真关节角，直接来自当前单腿模型。
        hip_joint   = RL_hip_joint
@@ -315,7 +315,7 @@ class RealLegCommandAdapter:
         )
 
         # ====================================================================
-        # 固定上电标定姿态（不是全部关节的 common 机械零位）。
+        # 固定标定姿态（不是全部关节的 common 机械零位）。
         #
         # 每次运行 scripts/33_calibrate_motor_home.py 前，人工应摆到：
         #   hip   : common hip_abduction =   0.00 deg，无内外摆动
@@ -380,7 +380,7 @@ class RealLegCommandAdapter:
 
     def common_to_bridge_cmd_deg(self, common_joint_deg):
         """
-        将固定 common 机械角转换为相对上电标定姿态的 bridge 电机命令。
+        将固定 common 机械角转换为相对固定标定姿态的 bridge 电机命令。
 
         髋和大腿是直驱关系：
             hip_bridge_cmd   = common_hip   - 0

@@ -34,7 +34,7 @@ DEFAULT_MOTORS = {
         "port": "/dev/ttyUSB1",
         "id": 0,
         "direction": 1.0,
-        # bridge 坐标以“上电标定时的大腿水平”为 0 deg。
+        # bridge 坐标以“固定标定姿态的大腿水平”为 0 deg。
         # common thigh 的机械安全范围仍为 [-30, +90] deg，标定姿态是
         # common +90 deg，因此 bridge 范围为 [-30-90, +90-90] = [-120, 0]。
         "min_deg": -120.0,
@@ -75,7 +75,9 @@ STATE_STOPPED = "stopped"
 STATE_FAULT = "fault"
 STATE_DRY_RUN = "dry_run"
 
-# 这里只能校验文件声明的元数据，不能从非绝对编码器判断人工摆放的真实姿态。
+# GO-M8010-6 使用转子侧单圈绝对式编码器。这里能校验文件声明的元数据和
+# 单圈相位参考，但没有多圈绝对或输出轴绝对传感器，仍不能仅凭 q 唯一判断
+# 任意机械关节姿态。
 # 小腿 common 角由当前四连杆几何和曲柄标定角自动计算，不再重复写死。
 _CALIBRATION_MODEL = RealLegCommandAdapter()
 EXPECTED_CALIBRATION_METADATA = {
@@ -128,9 +130,9 @@ def validate_calibration_metadata(entry, motor_name):
     """
     检查文件声明的标定元数据是否与当前代码约定一致。
 
-    这不能验证标定时腿是否真的摆在对应机械姿态；该事实只能由操作者或额外
-    的绝对传感器确认。这里仅防止旧格式、不同几何参数或不同标定约定的文件
-    被当前代码误用。
+    这不能验证标定时腿是否真的摆在对应机械姿态；转子侧单圈绝对相位不足以
+    唯一确定减速器输出轴的机械分支，该事实只能由操作者或输出侧/多圈绝对
+    传感器确认。这里仅防止旧格式、不同几何参数或不同标定约定的文件被误用。
     """
     ref = entry.get("calibration_reference")
     if not isinstance(ref, dict):
@@ -412,7 +414,7 @@ class RealUnitreeLegBridge:
         try:
             home = load_home()
         except FileNotFoundError as exc:
-            print("[startup] 未找到上电标定文件 ~/motor_home.json。")
+            print("[startup] 未找到固定姿态编码器参考文件 ~/motor_home.json。")
             print("[startup] 请先释放电机、摆到固定标定姿态，然后运行：")
             print("  /home/claww/miniforge3/envs/go2-convex-mpc/bin/python \\")
             print("    scripts/33_calibrate_motor_home.py \\")
@@ -456,13 +458,16 @@ class RealUnitreeLegBridge:
             raise RuntimeError("invalid motor home calibration") from exc
 
         print()
-        print("IMPORTANT: rotor feedback is only identifiable modulo 2*pi after reconnect.")
+        print(
+            "IMPORTANT: the rotor encoder is single-turn absolute; the firmware's "
+            "accumulated-turn branch may change by 2*pi after motor power cycling."
+        )
         print("Before reading, manually place the leg near the fixed calibration pose:")
         print("  hip=no abduction, thigh=horizontal, calf=fully folded hard stop")
         print(
             f"Each joint must be within about {STARTUP_NEAR_HOME_LIMIT_DEG:.0f} deg "
-            "of that pose; the bridge cannot infer an arbitrary pose without "
-            "an absolute sensor."
+            "of that pose; the bridge cannot infer an arbitrary joint pose without "
+            "a multi-turn or output-side absolute sensor."
         )
         reply = input("Type YES after the leg is near the calibration pose: ").strip()
         if reply != "YES":
@@ -777,7 +782,7 @@ class RealUnitreeLegBridge:
         """
         将 bridge 电机坐标转换为固定 common 机械关节坐标。
 
-        bridge 坐标是“相对本次上电标定姿态”的执行器角；
+        bridge 坐标是“相对固定标定姿态”的执行器角；
         common 坐标是仿真、RL、运动学讨论使用的固定机械角。
 
         对髋：
@@ -863,7 +868,7 @@ class RealUnitreeLegBridge:
             "motors_ready": self.motors_ready,
             "homing_complete": state in (STATE_READY, STATE_DRY_RUN),
 
-            # 原有 bridge 坐标：相对上电标定姿态的电机命令/读数。
+            # 原有 bridge 坐标：相对固定标定姿态的电机命令/读数。
             "target_deg": target_bridge,
             "current_deg": current_bridge,
             "tracking_error_bridge_deg": self.subtract_angles(
