@@ -25,6 +25,18 @@ def cosine_blend(ratio):
     return 0.5 - 0.5 * math.cos(math.pi * ratio)
 
 
+def read_stable_origin(bus, motor_id, settle_timeout_sec):
+    deadline = time.monotonic() + settle_timeout_sec
+    while True:
+        try:
+            return bus.read_mean_q(motor_id, samples=10)
+        except RuntimeError as exc:
+            if "unstable rotor readings" not in str(exc) or time.monotonic() >= deadline:
+                raise
+            print(f"waiting for motor to settle: {exc}")
+            time.sleep(0.25)
+
+
 def move_segment(bus, motor_id, q_start, q_target, gear, args):
     started = time.monotonic()
     last_q = q_start
@@ -118,6 +130,7 @@ def main():
     parser.add_argument("--ramp-sec", type=float, default=2.0)
     parser.add_argument("--hold-sec", type=float, default=0.5)
     parser.add_argument("--dt", type=float, default=0.02)
+    parser.add_argument("--settle-timeout-sec", type=float, default=5.0)
     parser.add_argument("--max-tracking-error-deg", type=float, default=8.0)
     parser.add_argument("--enable-motion", action="store_true")
     args = parser.parse_args()
@@ -129,6 +142,7 @@ def main():
         args.ramp_sec,
         args.hold_sec,
         args.dt,
+        args.settle_timeout_sec,
         args.max_tracking_error_deg,
     )
     if not all(math.isfinite(value) for value in numeric):
@@ -137,8 +151,15 @@ def main():
         parser.error("step-deg must be in (0, 10]")
     if args.kp < 0.0 or args.kd < 0.0:
         parser.error("kp and kd must be non-negative")
-    if args.ramp_sec <= 0.0 or args.dt <= 0.0 or args.hold_sec < 0.0:
-        parser.error("ramp/dt must be positive and hold must be non-negative")
+    if (
+        args.ramp_sec <= 0.0
+        or args.dt <= 0.0
+        or args.settle_timeout_sec <= 0.0
+        or args.hold_sec < 0.0
+    ):
+        parser.error(
+            "ramp/dt/settle timeout must be positive and hold must be non-negative"
+        )
 
     motor_id = (
         DEFAULT_RL_MOTOR_IDS[args.motor]
@@ -173,9 +194,20 @@ def main():
     bus = UnitreeDaisyChain(sdk, args.port)
     gear = bus.gear_ratio()
     print(f"SDK internal gear ratio={gear:.6f}")
-    print(f"stopping all configured bus IDs before motion: {bus_ids}")
-    bus.stop_many(bus_ids, repeats=3)
-    q_origin = bus.read_mean_q(motor_id, samples=10)
+    try:
+        print(f"stopping all configured bus IDs before motion: {bus_ids}")
+        bus.stop_many(bus_ids, repeats=3)
+        q_origin = read_stable_origin(
+            bus, motor_id, args.settle_timeout_sec
+        )
+    except Exception as exc:
+        print(f"STARTUP FAULT: {exc}")
+        try:
+            bus.stop_many(bus_ids, repeats=5)
+            print("Stop replies confirmed for all configured bus IDs.")
+        except Exception as stop_exc:
+            print(f"STOP FAILED: {stop_exc}; cut motor power immediately.")
+        return 1
     print(f"current rotor phase={q_origin:+.6f} rad")
 
     print("\nBefore continuing:")
