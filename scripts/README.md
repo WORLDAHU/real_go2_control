@@ -33,6 +33,40 @@
 - `39_release_leg_motors.py`：先零刚度再停止模式的电机释放工具。
 - `40_record_leg_bridge_status.py`：只读记录 `/status` 中的目标、实际角和跟踪误差。
 
+## GO4 菊花链裸电机测试（新硬件）
+
+GO4 使用一个 USB/RS485 端口依次访问多台不同 ID 的电机。机械顺序统一写成
+`hip -> thigh -> knee`，默认暂定 ID 为 `0 -> 1 -> 2`。物理串接顺序不能证明
+电机 ID，第一次必须先扫描：
+
+```bash
+/home/claww/miniforge3/envs/go2-convex-mpc/bin/python \
+  scripts/41_scan_daisy_chain.py \
+  --sdk-path /home/claww/unitree_actuator_sdk/lib \
+  --port /dev/ttyUSB0 \
+  --ids 0 1 2
+```
+
+`41` 只发送零刚度、零力矩查询。确认 ID 后先 dry-run 一台裸电机：
+
+```bash
+/home/claww/miniforge3/envs/go2-convex-mpc/bin/python \
+  scripts/42_test_one_bare_motor.py --motor hip
+```
+
+外部 16:28 齿轮和平行四边形断开、电机输出轴可自由转动，并确认角色与 ID 后，
+才允许显式打开动作：
+
+```bash
+/home/claww/miniforge3/envs/go2-convex-mpc/bin/python \
+  scripts/42_test_one_bare_motor.py \
+  --motor hip --motor-id 0 --enable-motion
+```
+
+默认动作是当前输出位置附近 `+2° -> 0° -> -2° -> 0°`，不是 URDF 关节角。
+`src/go4_leg_adapter.py` 已提供电机输出角与膝关节角之间的 16:28 换算，但在
+传动机构装好、方向和机械零位实测前，`42` 不使用这项换算。
+
 ## 实机并发安全规则
 
 1. 同一时间只能有一个程序打开某个电机串口。
@@ -41,6 +75,7 @@
 4. `28_mock_real_leg_bridge.py` 不访问串口，但不要让它与真实 bridge 绑定同一个 HTTP 端口。
 5. `33`、`37`、`39` 直接访问串口，运行前必须确认真实 bridge 已完全退出。
 6. 正式固定姿态标定只使用 `33_calibrate_motor_home.py`，不要恢复旧的独立小腿 home 文件。
+7. GO4 菊花链只允许一个进程创建一个 `SerialPort`；不得与旧 `32/33/37/39` 同时运行。
 
 ## 固定标定姿态与编码器类型
 
