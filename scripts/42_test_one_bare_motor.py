@@ -133,8 +133,8 @@ def main():
     )
     if not all(math.isfinite(value) for value in numeric):
         parser.error("all numeric arguments must be finite")
-    if not 0.0 < args.step_deg <= 5.0:
-        parser.error("step-deg must be in (0, 5]")
+    if not 0.0 < args.step_deg <= 10.0:
+        parser.error("step-deg must be in (0, 10]")
     if args.kp < 0.0 or args.kd < 0.0:
         parser.error("kp and kd must be non-negative")
     if args.ramp_sec <= 0.0 or args.dt <= 0.0 or args.hold_sec < 0.0:
@@ -200,7 +200,9 @@ def main():
             q_target = q_origin + math.radians(
                 offset_deg * args.direction
             ) * gear
-            current_output_deg = math.degrees(q_last - q_origin) / gear
+            current_output_deg = (
+                math.degrees(q_last - q_origin) / gear * args.direction
+            )
             print(
                 f"move output {current_output_deg:+.2f} -> "
                 f"{offset_deg:+.2f} deg"
@@ -209,6 +211,14 @@ def main():
                 bus, motor_id, q_last, q_target, gear, args
             )
             q_last = hold(bus, motor_id, q_target, gear, args)
+            reached_output_deg = (
+                math.degrees(q_last - q_origin) / gear * args.direction
+            )
+            print(
+                f"segment done: target={offset_deg:+.2f} deg, "
+                f"actual={reached_output_deg:+.2f} deg, "
+                f"error={offset_deg - reached_output_deg:+.2f} deg"
+            )
     except KeyboardInterrupt:
         result = 130
         print("Interrupted: releasing motor.")
