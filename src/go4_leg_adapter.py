@@ -10,6 +10,7 @@ import math
 # confirm them with scripts/41_scan_daisy_chain.py on the assembled bus.
 RL_MOTOR_ORDER = ("hip", "thigh", "knee")
 DEFAULT_RL_MOTOR_IDS = {"hip": 0, "thigh": 1, "knee": 2}
+DIRECT_DRIVE_ROLES = ("hip", "thigh")
 
 
 @dataclass(frozen=True)
@@ -49,3 +50,29 @@ class KneeTransmission:
             / self.direction
             / self.motor_to_knee_ratio
         )
+
+
+def motor_output_delta_to_joint_delta_deg(
+    role: str, motor_output_delta_deg: float, direction: float = 1.0
+) -> float:
+    """Convert relative motor-output motion to relative GO4 joint motion."""
+
+    if role not in RL_MOTOR_ORDER:
+        raise ValueError(f"unknown RL motor role: {role!r}")
+    if direction not in (-1.0, 1.0):
+        raise ValueError("direction must be +1 or -1")
+    ratio = 16.0 / 28.0 if role == "knee" else 1.0
+    return float(motor_output_delta_deg) * ratio * direction
+
+
+def joint_delta_to_motor_output_delta_deg(
+    role: str, joint_delta_deg: float, direction: float = 1.0
+) -> float:
+    """Convert a relative GO4 joint command to motor-output motion."""
+
+    if role not in RL_MOTOR_ORDER:
+        raise ValueError(f"unknown RL motor role: {role!r}")
+    if direction not in (-1.0, 1.0):
+        raise ValueError("direction must be +1 or -1")
+    ratio = 16.0 / 28.0 if role == "knee" else 1.0
+    return float(joint_delta_deg) / ratio / direction

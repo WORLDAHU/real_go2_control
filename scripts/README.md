@@ -67,6 +67,27 @@ GO4 使用一个 USB/RS485 端口依次访问多台不同 ID 的电机。机械�
 `src/go4_leg_adapter.py` 已提供电机输出角与膝关节角之间的 16:28 换算，但在
 传动机构装好、方向和机械零位实测前，`42` 不使用这项换算。
 
+三台裸电机测试通过后，安装传动并支撑整条腿。`43` 只读捕获一个无碰撞的
+临时参考姿态；该文件不是 URDF 机械零位：
+
+```bash
+/home/claww/miniforge3/envs/go2-convex-mpc/bin/python \
+  scripts/43_capture_go4_rl_reference.py
+```
+
+随后可先 dry-run 检查某个装配关节的相对 ±1° 命令。必须明确传入方向，膝关节
+会自动将 1° 关节运动换算为 1.75° 电机输出运动：
+
+```bash
+/home/claww/miniforge3/envs/go2-convex-mpc/bin/python \
+  scripts/44_test_go4_rl_joint_relative.py \
+  --joint knee --direction 1
+```
+
+真实运动还必须同时提供 `--transmission-installed --joint-supported --enable-motion`。
+另外两个关节只会收到 STOP，所以必须由台架支撑或机械约束，不能依靠它们主动
+保持姿态。首次装配测试硬限制为相对参考姿态 ±2°。
+
 ## 实机并发安全规则
 
 1. 同一时间只能有一个程序打开某个电机串口。

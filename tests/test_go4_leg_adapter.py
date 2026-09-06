@@ -8,7 +8,11 @@ SRC_DIR = Path(__file__).resolve().parents[1] / "src"
 if str(SRC_DIR) not in sys.path:
     sys.path.insert(0, str(SRC_DIR))
 
-from go4_leg_adapter import KneeTransmission
+from go4_leg_adapter import (
+    KneeTransmission,
+    joint_delta_to_motor_output_delta_deg,
+    motor_output_delta_to_joint_delta_deg,
+)
 from unitree_daisy_chain import unwrap_near
 
 
@@ -39,6 +43,28 @@ class Go4LegAdapterTests(unittest.TestCase):
                 2.0 * math.pi + 0.1,
             )
         )
+
+    def test_relative_direct_joint_mapping(self):
+        for role in ("hip", "thigh"):
+            self.assertEqual(
+                joint_delta_to_motor_output_delta_deg(role, 2.0, -1.0),
+                -2.0,
+            )
+            self.assertEqual(
+                motor_output_delta_to_joint_delta_deg(role, -2.0, -1.0),
+                2.0,
+            )
+
+    def test_relative_knee_mapping_round_trip(self):
+        for direction in (-1.0, 1.0):
+            motor_delta = joint_delta_to_motor_output_delta_deg(
+                "knee", 1.0, direction
+            )
+            self.assertTrue(math.isclose(abs(motor_delta), 1.75))
+            recovered = motor_output_delta_to_joint_delta_deg(
+                "knee", motor_delta, direction
+            )
+            self.assertTrue(math.isclose(recovered, 1.0))
 
 
 if __name__ == "__main__":
