@@ -91,15 +91,28 @@ def joint_delta_from_rotor(q, q_reference, gear, role, direction):
 
 def move_segment(bus, motor_id, q_start, q_target, q_reference, gear, args):
     started = time.monotonic()
+    deadline = started + args.ramp_sec + args.convergence_timeout_sec
     last_q = q_start
     excessive_error_count = 0
+    converged_count = 0
     target_joint_delta = joint_delta_from_rotor(
         q_target, q_reference, gear, args.joint, args.direction
     )
+    max_lead_motor_deg = abs(
+        joint_delta_to_motor_output_delta_deg(
+            args.joint, args.max_command_lead_deg, args.direction
+        )
+    )
+    max_lead_rotor_rad = math.radians(max_lead_motor_deg) * gear
     while True:
-        elapsed = time.monotonic() - started
+        now = time.monotonic()
+        elapsed = now - started
         ratio = min(elapsed / args.ramp_sec, 1.0)
-        q_cmd = q_start + (q_target - q_start) * cosine_blend(ratio)
+        q_nominal = q_start + (q_target - q_start) * cosine_blend(ratio)
+        q_cmd = min(
+            max(q_nominal, last_q - max_lead_rotor_rad),
+            last_q + max_lead_rotor_rad,
+        )
         reply = bus.transact(
             motor_id,
             q=q_cmd,
@@ -116,6 +129,16 @@ def move_segment(bus, motor_id, q_start, q_target, q_reference, gear, args):
             last_q, q_reference, gear, args.joint, args.direction
         )
         tracking_error = commanded_joint_delta - actual_joint_delta
+        target_error = target_joint_delta - actual_joint_delta
+        max_excursion = max(
+            args.start_tolerance_deg,
+            args.step_deg + args.max_excursion_margin_deg,
+        )
+        if abs(actual_joint_delta) > max_excursion:
+            raise RuntimeError(
+                f"joint left relative safety envelope: actual={actual_joint_delta:+.2f} "
+                f"deg, limit=+/-{max_excursion:.2f} deg"
+            )
         if abs(tracking_error) > args.max_tracking_error_deg:
             excessive_error_count += 1
         else:
@@ -124,13 +147,22 @@ def move_segment(bus, motor_id, q_start, q_target, q_reference, gear, args):
             raise RuntimeError(
                 f"joint tracking error stayed above limit: {tracking_error:+.2f} deg"
             )
-        if ratio >= 1.0:
+        if ratio >= 1.0 and abs(target_error) <= args.position_tolerance_deg:
+            converged_count += 1
+        else:
+            converged_count = 0
+        if converged_count >= 5:
             print(
                 f"segment done: target={target_joint_delta:+.2f} deg, "
                 f"actual={actual_joint_delta:+.2f} deg, "
-                f"error={target_joint_delta - actual_joint_delta:+.2f} deg"
+                f"error={target_error:+.2f} deg"
             )
             break
+        if now >= deadline:
+            raise RuntimeError(
+                f"joint did not converge within {args.convergence_timeout_sec:.1f}s "
+                f"after ramp: target_error={target_error:+.2f} deg"
+            )
         time.sleep(args.dt)
     return last_q
 
@@ -191,6 +223,10 @@ def main():
     parser.add_argument("--hold-sec", type=float, default=1.0)
     parser.add_argument("--dt", type=float, default=0.02)
     parser.add_argument("--settle-timeout-sec", type=float, default=5.0)
+    parser.add_argument("--convergence-timeout-sec", type=float, default=5.0)
+    parser.add_argument("--max-command-lead-deg", type=float, default=0.75)
+    parser.add_argument("--position-tolerance-deg", type=float, default=0.40)
+    parser.add_argument("--max-excursion-margin-deg", type=float, default=1.5)
     parser.add_argument("--start-tolerance-deg", type=float, default=3.0)
     parser.add_argument("--max-tracking-error-deg", type=float, default=1.5)
     parser.add_argument("--transmission-installed", action="store_true")
@@ -206,6 +242,10 @@ def main():
         args.hold_sec,
         args.dt,
         args.settle_timeout_sec,
+        args.convergence_timeout_sec,
+        args.max_command_lead_deg,
+        args.position_tolerance_deg,
+        args.max_excursion_margin_deg,
         args.start_tolerance_deg,
         args.max_tracking_error_deg,
     )
@@ -219,6 +259,10 @@ def main():
         args.ramp_sec,
         args.dt,
         args.settle_timeout_sec,
+        args.convergence_timeout_sec,
+        args.max_command_lead_deg,
+        args.position_tolerance_deg,
+        args.max_excursion_margin_deg,
         args.start_tolerance_deg,
         args.max_tracking_error_deg,
     ) <= 0.0 or args.hold_sec < 0.0:
