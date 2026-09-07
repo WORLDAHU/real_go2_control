@@ -30,6 +30,8 @@ def main():
     p.add_argument("--max-speed-deg-s", type=float, default=5.0)
     p.add_argument("--kp", type=float, default=0.20)
     p.add_argument("--kd", type=float, default=0.04)
+    p.add_argument("--hip-kp", type=float, help="Override kp for hip only")
+    p.add_argument("--hip-kd", type=float, help="Override kd for hip only")
     p.add_argument("--dt", type=float, default=0.02)
     p.add_argument("--max-start-offset-deg", type=float, default=3.0)
     p.add_argument("--max-tracking-error-deg", type=float, default=2.0)
@@ -42,6 +44,12 @@ def main():
         p.error("bare demo stroke must be in (0, 30] mm")
     if min(a.segment_sec, a.max_speed_deg_s, a.dt, a.max_start_offset_deg, a.max_tracking_error_deg, a.prehold_sec) <= 0:
         p.error("timing, speed and tolerances must be positive")
+    if a.hip_kp is not None and a.hip_kp < 0 or a.hip_kd is not None and a.hip_kd < 0:
+        p.error("hip kp/kd must be non-negative")
+    kp = {role: a.kp for role in RL_MOTOR_ORDER}
+    kd = {role: a.kd for role in RL_MOTOR_ORDER}
+    kp["hip"] = a.kp if a.hip_kp is None else a.hip_kp
+    kd["hip"] = a.kd if a.hip_kd is None else a.hip_kd
 
     model = Go4RLKinematics.from_urdf(URDF)
     trajectory = model.extension_cycle(a.stroke_mm / 1000.0, samples_per_leg=30)
@@ -58,6 +66,7 @@ def main():
     for role in RL_MOTOR_ORDER:
         print(f"{role}: joint delta={joint_delta[role]:+.3f} deg, motor output={motor_delta[role]:+.3f} deg")
     print(f"segment={segment_sec:.2f}s, peak speed <= {a.max_speed_deg_s:.2f} output-deg/s")
+    print(f"gains: hip kp/kd={kp['hip']:.3f}/{kd['hip']:.3f}, thigh/knee={a.kp:.3f}/{a.kd:.3f}")
     if not (a.gears_not_installed and a.shafts_free and a.enable_motion):
         print("DRY RUN. Motion requires --gears-not-installed --shafts-free --enable-motion")
         return 0
@@ -108,7 +117,7 @@ def main():
                 for role in RL_MOTOR_ORDER:
                     cmd = starts[role] + (target[role] - starts[role]) * blend
                     motor_id = int(motors[role]["id"])
-                    last[role] = unwrap_near(bus.transact(motor_id, q=cmd, dq=0, kp=a.kp, kd=a.kd, tau=0).q, cmd)
+                    last[role] = unwrap_near(bus.transact(motor_id, q=cmd, dq=0, kp=kp[role], kd=kd[role], tau=0).q, cmd)
                     error = abs(math.degrees(last[role] - cmd) / gear)
                     excessive[role] = excessive[role] + 1 if error > a.max_tracking_error_deg else 0
                     if excessive[role] >= 5:
@@ -124,7 +133,7 @@ def main():
                     for role in RL_MOTOR_ORDER:
                         motor_id = int(motors[role]["id"])
                         last[role] = unwrap_near(
-                            bus.transact(motor_id, q=zero[role], dq=0, kp=a.kp, kd=a.kd, tau=0).q,
+                            bus.transact(motor_id, q=zero[role], dq=0, kp=kp[role], kd=kd[role], tau=0).q,
                             zero[role],
                         )
                     time.sleep(a.dt)
