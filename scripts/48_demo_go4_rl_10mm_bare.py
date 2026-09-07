@@ -32,6 +32,8 @@ def main():
     p.add_argument("--kd", type=float, default=0.04)
     p.add_argument("--hip-kp", type=float, help="Override kp for hip only")
     p.add_argument("--hip-kd", type=float, help="Override kd for hip only")
+    p.add_argument("--knee-kp", type=float, help="Override kp for knee motor only")
+    p.add_argument("--knee-kd", type=float, help="Override kd for knee motor only")
     p.add_argument("--dt", type=float, default=0.02)
     p.add_argument("--max-start-offset-deg", type=float, default=3.0)
     p.add_argument("--max-tracking-error-deg", type=float, default=2.0)
@@ -46,10 +48,14 @@ def main():
         p.error("timing, speed and tolerances must be positive")
     if a.hip_kp is not None and a.hip_kp < 0 or a.hip_kd is not None and a.hip_kd < 0:
         p.error("hip kp/kd must be non-negative")
+    if a.knee_kp is not None and a.knee_kp < 0 or a.knee_kd is not None and a.knee_kd < 0:
+        p.error("knee kp/kd must be non-negative")
     kp = {role: a.kp for role in RL_MOTOR_ORDER}
     kd = {role: a.kd for role in RL_MOTOR_ORDER}
     kp["hip"] = a.kp if a.hip_kp is None else a.hip_kp
     kd["hip"] = a.kd if a.hip_kd is None else a.hip_kd
+    kp["knee"] = a.kp if a.knee_kp is None else a.knee_kp
+    kd["knee"] = a.kd if a.knee_kd is None else a.knee_kd
 
     model = Go4RLKinematics.from_urdf(URDF)
     trajectory = model.extension_cycle(a.stroke_mm / 1000.0, samples_per_leg=30)
@@ -66,7 +72,11 @@ def main():
     for role in RL_MOTOR_ORDER:
         print(f"{role}: joint delta={joint_delta[role]:+.3f} deg, motor output={motor_delta[role]:+.3f} deg")
     print(f"segment={segment_sec:.2f}s, peak speed <= {a.max_speed_deg_s:.2f} output-deg/s")
-    print(f"gains: hip kp/kd={kp['hip']:.3f}/{kd['hip']:.3f}, thigh/knee={a.kp:.3f}/{a.kd:.3f}")
+    print(
+        f"gains: hip={kp['hip']:.3f}/{kd['hip']:.3f}, "
+        f"thigh={kp['thigh']:.3f}/{kd['thigh']:.3f}, "
+        f"knee={kp['knee']:.3f}/{kd['knee']:.3f}"
+    )
     if not (a.gears_not_installed and a.shafts_free and a.enable_motion):
         print("DRY RUN. Motion requires --gears-not-installed --shafts-free --enable-motion")
         return 0
