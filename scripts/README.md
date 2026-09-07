@@ -75,6 +75,18 @@ GO4 URDF 将它缩放为足端深度序列：完全收回 0 mm -> 站立 30 mm -
 60 mm，所有阶段会按电机输出轴最大速度自动延长，并在跟踪误差持续超限时
 向三个电机发送 STOP。
 
+若传动仍未安装，可先用 `51` 让三个自由输出轴执行相同关键姿态的等效电机
+序列。它不代表真实足端已经运动，只用于装配前确认三电机协调、方向、速度和
+回零过程：
+
+```bash
+/home/claww/miniforge3/envs/go2-convex-mpc/bin/python \
+  scripts/51_demo_go4_rl_old_motion_bare.py
+```
+
+实际发送裸轴动作还必须加入 `--gears-not-installed --shafts-free
+--bare-reference-confirmed --enable-motion`，并输入 `BARE_LEGACY`。
+
 ```bash
 /home/claww/miniforge3/envs/go2-convex-mpc/bin/python \
   scripts/41_scan_daisy_chain.py \
