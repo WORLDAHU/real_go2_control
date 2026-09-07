@@ -41,6 +41,7 @@ def main():
     parser.add_argument("--flight-hold-sec", type=float, default=1.0)
     parser.add_argument("--prehold-sec", type=float, default=3.0)
     parser.add_argument("--max-speed-deg-s", type=float, default=1.5)
+    parser.add_argument("--velocity-feedforward-scale", type=float, default=0.0)
     parser.add_argument("--kp", type=float, default=0.30)
     parser.add_argument("--kd", type=float, default=0.06)
     parser.add_argument("--hip-kp", type=float, default=0.40)
@@ -87,6 +88,8 @@ def main():
         parser.error("timing, speed and tolerances must be positive and finite")
     if not all(math.isfinite(value) and value >= 0.0 for value in nonnegative):
         parser.error("hold time and gains must be non-negative and finite")
+    if not math.isfinite(args.velocity_feedforward_scale) or not 0.0 <= args.velocity_feedforward_scale <= 1.0:
+        parser.error("velocity-feedforward-scale must be in [0, 1]")
 
     model = Go4RLKinematics.from_urdf(URDF)
     q_reference = model.retracted_q()
@@ -123,6 +126,7 @@ def main():
         "gains: "
         + ", ".join(f"{role}={kp[role]:.3f}/{kd[role]:.3f}" for role in RL_MOTOR_ORDER)
     )
+    print(f"velocity feedforward scale={args.velocity_feedforward_scale:.2f}")
     required_flags = (
         args.gears_not_installed
         and args.shafts_free
@@ -155,22 +159,28 @@ def main():
     current = {}
     last = {}
     excessive = {role: 0 for role in RL_MOTOR_ORDER}
+    commanded_peak = {role: 0.0 for role in RL_MOTOR_ORDER}
+    measured_peak = {role: 0.0 for role in RL_MOTOR_ORDER}
     result = 0
 
-    def transact_targets(targets):
+    def transact_targets(targets, velocities=None):
+        velocities = velocities or {role: 0.0 for role in RL_MOTOR_ORDER}
         for role in RL_MOTOR_ORDER:
             motor_id = int(motors[role]["id"])
-            last[role] = unwrap_near(
-                bus.transact(
-                    motor_id,
-                    q=targets[role],
-                    dq=0.0,
-                    kp=kp[role],
-                    kd=kd[role],
-                    tau=0.0,
-                ).q,
-                targets[role],
+            reply = bus.transact(
+                motor_id,
+                q=targets[role],
+                dq=velocities[role],
+                kp=kp[role],
+                kd=kd[role],
+                tau=0.0,
             )
+            last[role] = unwrap_near(reply.q, targets[role])
+            commanded_speed = abs(math.degrees(velocities[role]) / gear)
+            commanded_peak[role] = max(commanded_peak[role], commanded_speed)
+            if math.isfinite(reply.dq):
+                measured_speed = abs(math.degrees(reply.dq) / gear)
+                measured_peak[role] = max(measured_peak[role], measured_speed)
             error = abs(math.degrees(last[role] - targets[role]) / gear)
             excessive[role] = excessive[role] + 1 if error > max_error[role] else 0
             if excessive[role] >= 5:
@@ -184,7 +194,13 @@ def main():
         while True:
             ratio = min((time.monotonic() - begun) / duration, 1.0)
             blend = min_jerk(ratio)
-            transact_targets({r: starts[r] + (targets[r] - starts[r]) * blend for r in RL_MOTOR_ORDER})
+            blend_rate = 30.0 * ratio**2 * (1.0 - ratio) ** 2 / duration if ratio < 1.0 else 0.0
+            commands = {r: starts[r] + (targets[r] - starts[r]) * blend for r in RL_MOTOR_ORDER}
+            velocities = {
+                r: (targets[r] - starts[r]) * blend_rate * args.velocity_feedforward_scale
+                for r in RL_MOTOR_ORDER
+            }
+            transact_targets(commands, velocities)
             if ratio >= 1.0:
                 break
             time.sleep(args.dt)
@@ -243,6 +259,12 @@ def main():
                 hold_targets("flight", targets[index], args.flight_hold_sec)
         hold_targets("final_home_hold", targets[-1], 1.0)
         print("Bare-motor scaled legacy motion completed and returned to zero.")
+        print("peak output speed [deg/s]:")
+        for role in RL_MOTOR_ORDER:
+            print(
+                f"  {role}: commanded={commanded_peak[role]:.2f}, "
+                f"measured={measured_peak[role]:.2f}"
+            )
     except KeyboardInterrupt:
         result = 130
         print("Interrupted")

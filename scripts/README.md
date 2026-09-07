@@ -89,6 +89,9 @@ GO4 URDF 将它缩放为足端深度序列：完全收回 0 mm -> 站立 30 mm -
 超过 60 mm、最高到旧动作原范围 160 mm 的裸轴等效测试，还必须额外加入
 `--large-range-confirmed`。原范围的关键深度是 stand=60、crouch=0、
 extend=160、soft-land=20 mm；该放宽不适用于装配腿脚本 `50`。
+高速裸轴测试可显式加入 `--velocity-feedforward-scale 1.0`，让 SDK 的目标速度
+跟随平滑位置轨迹，而不是始终发送 dq=0。默认值仍为 0；脚本结束时会打印每台
+电机的指令和反馈峰值输出速度。
 
 ```bash
 /home/claww/miniforge3/envs/go2-convex-mpc/bin/python \
