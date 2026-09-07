@@ -39,6 +39,18 @@ GO4 使用一个 USB/RS485 端口依次访问多台不同 ID 的电机。机械�
 `hip -> thigh -> knee`，默认暂定 ID 为 `0 -> 1 -> 2`。物理串接顺序不能证明
 电机 ID，第一次必须先扫描：
 
+在接通实机动作前，可以先离线检查由 `models/go4/GO4.urdf` 参数生成的左后腿
+“完全收回 -> 足端向下 -> 完全收回”轨迹：
+
+```bash
+/home/claww/miniforge3/envs/go2-convex-mpc/bin/python \
+  scripts/45_preview_go4_rl_extension.py --stroke-mm 60
+```
+
+该脚本只计算运动学，不访问串口，也不发送电机命令。起始姿态使用 URDF 中
+`RL_hip_joint=0`、`RL_thigh_joint=upper`、`RL_calf_joint=lower`，运动过程中
+保持 hip 不动，并由 thigh/calf 协调实现足端竖直向下。
+
 ```bash
 /home/claww/miniforge3/envs/go2-convex-mpc/bin/python \
   scripts/41_scan_daisy_chain.py \
@@ -67,8 +79,10 @@ GO4 使用一个 USB/RS485 端口依次访问多台不同 ID 的电机。机械�
 `src/go4_leg_adapter.py` 已提供电机输出角与膝关节角之间的 16:28 换算，但在
 传动机构装好、方向和机械零位实测前，`42` 不使用这项换算。
 
-三台裸电机测试通过后，安装传动并支撑整条腿。`43` 只读捕获一个无碰撞的
-临时参考姿态；该文件不是 URDF 机械零位：
+三台裸电机测试通过后，安装传动并支撑整条腿。`43` 复用旧标定中同型号
+GO-M8010-6 的单圈编码器分支对齐和内部减速比处理，只读捕获 GO4 URDF 声明的
+完全收回参考姿态：hip 为 0、thigh 为 URDF upper、calf 为 URDF lower。
+它还会把 URDF 哈希和参考关节角写入参考文件：
 
 ```bash
 /home/claww/miniforge3/envs/go2-convex-mpc/bin/python \

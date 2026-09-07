@@ -19,6 +19,7 @@ from go4_leg_adapter import (
     joint_delta_to_motor_output_delta_deg,
     motor_output_delta_to_joint_delta_deg,
 )
+from go4_rl_kinematics import Go4RLKinematics, RL_JOINT_NAMES
 from unitree_daisy_chain import (
     UnitreeDaisyChain,
     import_unitree_sdk,
@@ -28,6 +29,8 @@ from unitree_daisy_chain import (
 
 SCHEMA = "go4_rl_relative_reference_v1"
 DEFAULT_REFERENCE_FILE = os.path.expanduser("~/go4_rl_reference.json")
+DEFAULT_URDF = Path(__file__).resolve().parents[1] / "models" / "go4" / "GO4.urdf"
+ROLE_TO_URDF_JOINT = dict(zip(RL_MOTOR_ORDER, RL_JOINT_NAMES))
 
 
 def load_reference(path):
@@ -63,6 +66,44 @@ def load_reference(path):
     ):
         raise ValueError("reference does not declare the expected 16:28, 1:1 knee drive")
     return payload
+
+
+def safe_test_sequence(reference, role, step_deg, urdf_path):
+    """Choose only directions that remain inside the GO4 URDF joint limits."""
+
+    urdf = reference.get("urdf")
+    joint_reference = urdf.get("joint_reference_deg") if isinstance(urdf, dict) else None
+    joint_name = ROLE_TO_URDF_JOINT[role]
+    if not isinstance(joint_reference, dict) or joint_name not in joint_reference:
+        raise ValueError(
+            "reference has no GO4 URDF joint reference; recapture it with script 43"
+        )
+
+    model = Go4RLKinematics.from_urdf(urdf_path)
+    joint_index = RL_JOINT_NAMES.index(joint_name)
+    reference_deg = float(joint_reference[joint_name])
+    lower_deg = math.degrees(model.lower[joint_index])
+    upper_deg = math.degrees(model.upper[joint_index])
+    tolerance = 1e-4
+    if reference_deg < lower_deg - tolerance or reference_deg > upper_deg + tolerance:
+        raise ValueError(
+            f"reference {joint_name}={reference_deg:+.3f} deg is outside "
+            f"URDF [{lower_deg:+.3f}, {upper_deg:+.3f}] deg"
+        )
+
+    allowed = []
+    if reference_deg + step_deg <= upper_deg + tolerance:
+        allowed.append(step_deg)
+    if reference_deg - step_deg >= lower_deg - tolerance:
+        allowed.append(-step_deg)
+    if not allowed:
+        raise ValueError(
+            f"no {step_deg:.3f} deg test step fits inside the URDF limits"
+        )
+    sequence = [0.0]
+    for delta in allowed:
+        sequence.extend((delta, 0.0))
+    return tuple(sequence), reference_deg, lower_deg, upper_deg
 
 
 def cosine_blend(ratio):
@@ -214,6 +255,7 @@ def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--sdk-path", default="/home/claww/unitree_actuator_sdk/lib")
     parser.add_argument("--reference", default=DEFAULT_REFERENCE_FILE)
+    parser.add_argument("--urdf", default=str(DEFAULT_URDF))
     parser.add_argument("--joint", choices=RL_MOTOR_ORDER, required=True)
     parser.add_argument("--direction", type=float, choices=(-1.0, 1.0), required=True)
     parser.add_argument("--step-deg", type=float, default=1.0)
@@ -276,16 +318,23 @@ def main():
     entry = reference["motors"][args.joint]
     motor_id = int(entry["id"])
     bus_ids = [int(reference["motors"][role]["id"]) for role in RL_MOTOR_ORDER]
+    try:
+        sequence, reference_joint_deg, lower_deg, upper_deg = safe_test_sequence(
+            reference, args.joint, args.step_deg, args.urdf
+        )
+    except Exception as exc:
+        print(f"Cannot build URDF-safe test sequence: {exc}")
+        return 1
+    first_step = next(delta for delta in sequence if delta != 0.0)
     motor_output_step = joint_delta_to_motor_output_delta_deg(
-        args.joint, args.step_deg, args.direction
+        args.joint, first_step, args.direction
     )
 
     print("GO4 RL assembled joint relative test")
     print(f"joint={args.joint} id={motor_id} direction={args.direction:+.0f}")
-    print(
-        f"joint sequence=reference -> +{args.step_deg:.2f} deg -> reference -> "
-        f"-{args.step_deg:.2f} deg -> reference"
-    )
+    print(f"URDF reference={reference_joint_deg:+.3f} deg")
+    print(f"URDF limits=[{lower_deg:+.3f}, {upper_deg:+.3f}] deg")
+    print("joint delta sequence=" + " -> ".join(f"{value:+.2f}" for value in sequence))
     print(f"required motor-output step={motor_output_step:+.3f} deg")
     print("This is a RELATIVE test; the captured pose is not URDF joint zero.")
 
@@ -346,7 +395,6 @@ def main():
             print("Cancelled.")
         else:
             q_last = q_current
-            sequence = (0.0, args.step_deg, 0.0, -args.step_deg, 0.0)
             for target_joint_delta in sequence:
                 motor_delta = joint_delta_to_motor_output_delta_deg(
                     args.joint, target_joint_delta, args.direction
