@@ -119,6 +119,31 @@ class Go4RLKinematics:
         q = np.array([0.0, self.upper[1], self.lower[2]], dtype=float)
         return self.validate_q(q)
 
+    def q_at_extension(self, depth_m: float, q_seed=None) -> np.ndarray:
+        """Solve the vertical foot pose ``depth_m`` below the retracted pose."""
+
+        if not math.isfinite(depth_m) or depth_m < 0.0:
+            raise ValueError("depth_m must be non-negative and finite")
+        q_retracted = self.retracted_q()
+        seed = q_retracted if q_seed is None else self.validate_q(q_seed)
+        target = self.foot_position(q_retracted) + np.array([0.0, 0.0, -depth_m])
+        return self.solve_foot_target(target, seed, fixed_hip=q_retracted[0])
+
+    def extension_keyframes(self, depths_m) -> np.ndarray:
+        """Solve an ordered sequence of vertical extension depths continuously."""
+
+        depths = np.asarray(depths_m, dtype=float)
+        if depths.ndim != 1 or len(depths) < 1 or not np.all(np.isfinite(depths)):
+            raise ValueError("depths_m must be a non-empty finite sequence")
+        if np.any(depths < 0.0):
+            raise ValueError("extension depths must be non-negative")
+        q_seed = self.retracted_q()
+        solved = []
+        for depth in depths:
+            q_seed = self.q_at_extension(float(depth), q_seed)
+            solved.append(q_seed.copy())
+        return np.asarray(solved)
+
     def solve_foot_target(
         self,
         target_xyz,

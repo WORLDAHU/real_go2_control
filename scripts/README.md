@@ -51,6 +51,30 @@ GO4 使用一个 USB/RS485 端口依次访问多台不同 ID 的电机。机械�
 `RL_hip_joint=0`、`RL_thigh_joint=upper`、`RL_calf_joint=lower`，运动过程中
 保持 hip 不动，并由 thigh/calf 协调实现足端竖直向下。
 
+旧非平行四边形单腿动作在 GO4 上不能复用原电机角和四连杆反解。`49` 使用
+GO4 URDF 将它缩放为足端深度序列：完全收回 0 mm -> 站立 30 mm -> 收腿
+0 mm -> 下蹬 60 mm -> 缓冲 10 mm -> 恢复 30 mm -> 最终回零：
+
+```bash
+/home/claww/miniforge3/envs/go2-convex-mpc/bin/python \
+  scripts/49_preview_go4_rl_old_motion.py
+```
+
+`50` 是装配腿专用的低速实机入口。必须在安装 16:28 齿轮和平行四边形后，
+把腿固定在 GO4 URDF 完全收回姿态并重新运行 `43`。随后先完成 `44` 的三个
+0.5 度单关节测试。只有这些检查通过后，才可在悬空台架上使用 `50`；它不能
+用于仍未安装传动的裸电机：
+
+```bash
+/home/claww/miniforge3/envs/go2-convex-mpc/bin/python \
+  scripts/50_demo_go4_rl_assembled_motion.py
+```
+
+实机运动还必须显式加入 `--transmission-installed --leg-suspended
+--assembled-reference-confirmed --enable-motion`。默认动作最大足端深度限制为
+60 mm，所有阶段会按电机输出轴最大速度自动延长，并在跟踪误差持续超限时
+向三个电机发送 STOP。
+
 ```bash
 /home/claww/miniforge3/envs/go2-convex-mpc/bin/python \
   scripts/41_scan_daisy_chain.py \

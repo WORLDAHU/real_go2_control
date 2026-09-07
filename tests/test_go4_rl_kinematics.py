@@ -45,6 +45,17 @@ class Go4RLKinematicsTests(unittest.TestCase):
         self.assertTrue(np.all(trajectory >= self.model.lower - 1e-10))
         self.assertTrue(np.all(trajectory <= self.model.upper + 1e-10))
 
+    def test_scaled_legacy_motion_keyframes_follow_vertical_line(self):
+        depths = np.array([0.03, 0.0, 0.06, 0.01, 0.03, 0.0])
+        q = self.model.extension_keyframes(depths)
+        foot = np.asarray([self.model.foot_position(value) for value in q])
+        retracted = self.model.foot_position(self.model.retracted_q())
+        expected_xy = np.repeat(retracted[None, :2], len(depths), axis=0)
+        np.testing.assert_allclose(foot[:, :2], expected_xy, atol=2e-6)
+        np.testing.assert_allclose(foot[:, 2], retracted[2] - depths, atol=2e-6)
+        self.assertTrue(np.all(q >= self.model.lower - 1e-10))
+        self.assertTrue(np.all(q <= self.model.upper + 1e-10))
+
 
 if __name__ == "__main__":
     unittest.main()
