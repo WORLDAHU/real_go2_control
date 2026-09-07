@@ -81,18 +81,43 @@ def main():
     last = {}
     result = 0
     try:
+        print("Support the free shafts, then confirm. Holding starts immediately after confirmation.")
+        if input("Type HOLD_DEMO to acquire, hold, return, then run: ").strip().upper() != "HOLD_DEMO":
+            print("Cancelled")
+            return 0
+
         bus.stop_many(ids, repeats=3)
+        # Take one fast snapshot of every free shaft, then immediately hold the
+        # captured positions.  The old multi-sample, zero-stiffness reads let a
+        # gravity-loaded hip sag while the operator was typing and while the
+        # other motors were being sampled.
         for role in RL_MOTOR_ORDER:
             motor_id = int(motors[role]["id"])
-            current[role] = bus.read_mean_q(motor_id, samples=12)
+            current[role] = bus.query(motor_id).q
+
+        for _ in range(12):
+            for role in RL_MOTOR_ORDER:
+                motor_id = int(motors[role]["id"])
+                last[role] = unwrap_near(
+                    bus.transact(
+                        motor_id,
+                        q=current[role],
+                        dq=0,
+                        kp=kp[role],
+                        kd=kd[role],
+                        tau=0,
+                    ).q,
+                    current[role],
+                )
+            time.sleep(a.dt)
+
+        current = dict(last)
+        for role in RL_MOTOR_ORDER:
             zero[role] = unwrap_near(float(motors[role]["q_reference_phase_rad"]), current[role])
             offset = math.degrees(current[role] - zero[role]) / gear
             print(f"{role}: start offset={offset:+.3f} output deg")
             if abs(offset) > a.max_start_offset_deg:
                 raise RuntimeError(f"{role} is not close enough to motor zero")
-        if input("Type HOLD_DEMO to return, hold, then run: ").strip().upper() != "HOLD_DEMO":
-            print("Cancelled")
-            return 0
 
         targets = [
             dict(zero),
