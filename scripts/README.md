@@ -86,6 +86,9 @@ GO4 URDF 将它缩放为足端深度序列：完全收回 0 mm -> 站立 30 mm -
 
 实际发送裸轴动作还必须加入 `--gears-not-installed --shafts-free
 --bare-reference-confirmed --enable-motion`，并输入 `BARE_LEGACY`。
+超过 60 mm、最高到旧动作原范围 160 mm 的裸轴等效测试，还必须额外加入
+`--large-range-confirmed`。原范围的关键深度是 stand=60、crouch=0、
+extend=160、soft-land=20 mm；该放宽不适用于装配腿脚本 `50`。
 
 ```bash
 /home/claww/miniforge3/envs/go2-convex-mpc/bin/python \

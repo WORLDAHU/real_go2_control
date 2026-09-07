@@ -54,6 +54,7 @@ def main():
     parser.add_argument("--gears-not-installed", action="store_true")
     parser.add_argument("--shafts-free", action="store_true")
     parser.add_argument("--bare-reference-confirmed", action="store_true")
+    parser.add_argument("--large-range-confirmed", action="store_true")
     parser.add_argument("--enable-motion", action="store_true")
     args = parser.parse_args()
 
@@ -62,8 +63,8 @@ def main():
         parser.error("all depths must be finite")
     if not 0.0 <= args.crouch_mm <= args.soft_land_mm <= args.stand_mm < args.extend_mm:
         parser.error("expected crouch <= soft-land <= stand < extend")
-    if args.extend_mm > 60.0:
-        parser.error("bare replicated motion is limited to 60 mm")
+    if args.extend_mm > 160.0:
+        parser.error("bare replicated motion is limited to 160 mm")
     positive = (
         args.segment_sec,
         args.prehold_sec,
@@ -122,14 +123,18 @@ def main():
         "gains: "
         + ", ".join(f"{role}={kp[role]:.3f}/{kd[role]:.3f}" for role in RL_MOTOR_ORDER)
     )
-    if not (
+    required_flags = (
         args.gears_not_installed
         and args.shafts_free
         and args.bare_reference_confirmed
         and args.enable_motion
-    ):
+    )
+    large_range_ready = args.extend_mm <= 60.0 or args.large_range_confirmed
+    if not (required_flags and large_range_ready):
         print("DRY RUN. Motion requires --gears-not-installed --shafts-free")
         print("--bare-reference-confirmed --enable-motion")
+        if args.extend_mm > 60.0:
+            print("Motion above 60 mm also requires --large-range-confirmed")
         return 0
 
     reference = json.loads(Path(args.reference).expanduser().read_text(encoding="utf-8"))
