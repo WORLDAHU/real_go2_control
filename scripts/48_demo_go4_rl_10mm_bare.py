@@ -33,13 +33,14 @@ def main():
     p.add_argument("--dt", type=float, default=0.02)
     p.add_argument("--max-start-offset-deg", type=float, default=3.0)
     p.add_argument("--max-tracking-error-deg", type=float, default=2.0)
+    p.add_argument("--prehold-sec", type=float, default=3.0)
     p.add_argument("--gears-not-installed", action="store_true")
     p.add_argument("--shafts-free", action="store_true")
     p.add_argument("--enable-motion", action="store_true")
     a = p.parse_args()
     if not 0.0 < a.stroke_mm <= 10.0:
         p.error("bare demo stroke must be in (0, 10] mm")
-    if min(a.segment_sec, a.max_speed_deg_s, a.dt, a.max_start_offset_deg, a.max_tracking_error_deg) <= 0:
+    if min(a.segment_sec, a.max_speed_deg_s, a.dt, a.max_start_offset_deg, a.max_tracking_error_deg, a.prehold_sec) <= 0:
         p.error("timing, speed and tolerances must be positive")
 
     model = Go4RLKinematics.from_urdf(URDF)
@@ -80,31 +81,53 @@ def main():
             print(f"{role}: start offset={offset:+.3f} output deg")
             if abs(offset) > a.max_start_offset_deg:
                 raise RuntimeError(f"{role} is not close enough to motor zero")
-        if input("Type BARE_DEMO to run the 10 mm equivalent: ").strip().upper() != "BARE_DEMO":
+        if input("Type HOLD_DEMO to return, hold, then run: ").strip().upper() != "HOLD_DEMO":
             print("Cancelled")
             return 0
 
         targets = [
+            dict(zero),
             {role: zero[role] + math.radians(motor_delta[role]) * gear for role in RL_MOTOR_ORDER},
             dict(zero),
         ]
         starts = dict(current)
-        for target in targets:
+        excessive = {role: 0 for role in RL_MOTOR_ORDER}
+        for target_index, target in enumerate(targets):
+            distance_deg = max(
+                abs(math.degrees(target[role] - starts[role]) / gear)
+                for role in RL_MOTOR_ORDER
+            )
+            actual_segment_sec = max(
+                segment_sec,
+                distance_deg * math.pi / (2.0 * a.max_speed_deg_s),
+            )
             begun = time.monotonic()
             while True:
-                s = min((time.monotonic() - begun) / segment_sec, 1.0)
+                s = min((time.monotonic() - begun) / actual_segment_sec, 1.0)
                 blend = 0.5 - 0.5 * math.cos(math.pi * s)
                 for role in RL_MOTOR_ORDER:
                     cmd = starts[role] + (target[role] - starts[role]) * blend
                     motor_id = int(motors[role]["id"])
                     last[role] = unwrap_near(bus.transact(motor_id, q=cmd, dq=0, kp=a.kp, kd=a.kd, tau=0).q, cmd)
                     error = abs(math.degrees(last[role] - cmd) / gear)
-                    if error > a.max_tracking_error_deg:
+                    excessive[role] = excessive[role] + 1 if error > a.max_tracking_error_deg else 0
+                    if excessive[role] >= 5:
                         raise RuntimeError(f"{role} tracking error={error:.2f} deg")
                 if s >= 1.0:
                     break
                 time.sleep(a.dt)
             starts = dict(last)
+            if target_index == 0:
+                print(f"All motors at zero; holding {a.prehold_sec:.1f}s before demo. You may release support.")
+                until = time.monotonic() + a.prehold_sec
+                while time.monotonic() < until:
+                    for role in RL_MOTOR_ORDER:
+                        motor_id = int(motors[role]["id"])
+                        last[role] = unwrap_near(
+                            bus.transact(motor_id, q=zero[role], dq=0, kp=a.kp, kd=a.kd, tau=0).q,
+                            zero[role],
+                        )
+                    time.sleep(a.dt)
         print("10 mm equivalent completed and all motors returned to zero.")
     except KeyboardInterrupt:
         result = 130
