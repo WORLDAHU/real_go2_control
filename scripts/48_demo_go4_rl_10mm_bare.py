@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Run the motor-output equivalent of a 10 mm GO4 RL extension, without gears."""
+"""Run a GO4 RL extension-equivalent motor motion without installed gears."""
 import argparse
 import json
 import math
@@ -38,8 +38,8 @@ def main():
     p.add_argument("--shafts-free", action="store_true")
     p.add_argument("--enable-motion", action="store_true")
     a = p.parse_args()
-    if not 0.0 < a.stroke_mm <= 10.0:
-        p.error("bare demo stroke must be in (0, 10] mm")
+    if not 0.0 < a.stroke_mm <= 30.0:
+        p.error("bare demo stroke must be in (0, 30] mm")
     if min(a.segment_sec, a.max_speed_deg_s, a.dt, a.max_start_offset_deg, a.max_tracking_error_deg, a.prehold_sec) <= 0:
         p.error("timing, speed and tolerances must be positive")
 
@@ -128,7 +128,7 @@ def main():
                             zero[role],
                         )
                     time.sleep(a.dt)
-        print("10 mm equivalent completed and all motors returned to zero.")
+        print(f"{a.stroke_mm:.1f} mm equivalent completed and all motors returned to zero.")
     except KeyboardInterrupt:
         result = 130
         print("Interrupted")
